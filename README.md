@@ -12,7 +12,6 @@ Features
 Files
 - `gui.py` — a Tkinter GUI wrapper around the clustering utilities.
 - `cluster_tool.py` — clustering utilities and a CLI entrypoint.
-- `cluster.txt` — original clustering module source (copied into `cluster_tool.py`).
 
 Quickstart (GUI)
 1. Ensure system Tk support is installed (e.g., `sudo apt-get install python3-tk` on Debian/Ubuntu).
