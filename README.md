@@ -55,5 +55,13 @@ Support & Contact
 - linkedin: https://www.linkedin.com/in/aneekhait/
   
 
+## Support & Funded Features
+
+If Text Analyzer Pro saved you time or helped your analysis, consider supporting development or funding a feature request. See `FUNDING.md` for details on how funds are used, sponsorship tiers, and the process for requesting prioritized features for v2.0.
+
+Support links:
+- GitHub Sponsors: https://github.com/sponsors/AneekHait
+- Buy Me a Coffee: https://www.buymeacoffee.com/aneekhait
+
 License
 This project is MIT licensed — see `LICENSE` for details.
