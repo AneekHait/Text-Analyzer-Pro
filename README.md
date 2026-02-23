@@ -1,43 +1,56 @@
-# Text Clustering Tool
+# Text Analyzer Pro (v1.5)
 
-A small GUI and CLI tool to cluster text data from Excel files using TF-IDF and scikit-learn.
+Intelligent Text Clustering & Analysis — desktop GUI for clustering text from Excel workbooks.
 
 Features
-- Load an Excel file and choose a text column (GUI).
-- Preprocess and vectorize texts (TF-IDF).
-- Clustering algorithms: KMeans, DBSCAN, Agglomerative.
-- Compute top keywords per cluster and generate human-readable cluster names.
-- Save results back to Excel with cluster labels and names.
+- Multi-sheet Excel support; choose any text column
+- Preprocessing + TF‑IDF vectorization
+- Clustering: K-Means, DBSCAN, Agglomerative
+- Automatic keyword extraction and suggested human-readable cluster names
+- 2D visualizations (PCA, t-SNE)
+- Save results back to Excel and persist models with `joblib`
 
 Files
-- `gui.py` — a Tkinter GUI wrapper around the clustering utilities.
-- `cluster_tool.py` — clustering utilities and a CLI entrypoint.
+- `gui.py` — Tkinter GUI and user workflows
+- `cluster_tool.py` — clustering engine and utilities
+- `run.bat` — Windows launcher that creates a `.venv` and installs `requirements.txt` on first run; displays an ASCII banner
+- `ascii_banner.txt` — plain-text ASCII banner used by `run.bat`
 
-Quickstart (GUI)
-1. Ensure system Tk support is installed (e.g., `sudo apt-get install python3-tk` on Debian/Ubuntu).
-2. Install Python dependencies into your environment (recommended: virtualenv):
+Quickstart — Windows (recommended)
+1. Double-click `run.bat` in the project root. On first run it will:
+	- create a virtual environment `.venv`
+	- install dependencies from `requirements.txt`
+	- display the ASCII banner and launch the GUI
 
+2. If you need to run manually from PowerShell or CMD:
+```powershell
+cd path\to\text-clustering-tool
+.venv\Scripts\Activate.ps1   # PowerShell
+or
+.venv\Scripts\activate.bat   # CMD
+.venv\Scripts\python.exe gui.py
+```
+
+Quickstart — macOS / Linux
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+.venv/bin/python gui.py
 ```
 
-3. Launch the GUI:
+Usage (GUI)
+- Click **Select Excel file...** and pick a workbook
+- Choose the sheet and text column
+- Pick algorithm and parameters, then click **Run Clustering**
+- Edit suggested cluster names and click **Save Results** to write an output Excel file
 
-```bash
-"$PWD/.venv/bin/python" "${PWD}/gui.py"
-```
+CLI (advanced)
+See `cluster_tool.py` for a CLI entrypoint and example usage (column flags, algorithm and output options).
 
-Quickstart (CLI)
-
-```bash
-# Example: cluster the column "comments" in data.xlsx
-"$PWD/.venv/bin/python" cluster_tool.py -i data.xlsx -c comments -a kmeans -k 5 -o data_clustered.xlsx
-```
-
-Documentation
-See `docs/usage.md` for more examples and explanation of parameters.
+Support & Contact
+- Website: https://aneekhait.github.io
+- Author: Aneek Hait
 
 License
-This project is provided under the MIT license — see `LICENSE`.
+This project is MIT licensed — see `LICENSE` for details.
