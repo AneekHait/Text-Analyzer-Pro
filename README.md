@@ -51,6 +51,9 @@ See `cluster_tool.py` for a CLI entrypoint and example usage (column flags, algo
 Support & Contact
 - Website: https://aneekhait.github.io
 - Author: Aneek Hait
+- Buymeacoffee: https://www.buymeacoffee.com/aneekhait
+- linkedin: https://www.linkedin.com/in/aneekhait/
+  
 
 License
 This project is MIT licensed — see `LICENSE` for details.
