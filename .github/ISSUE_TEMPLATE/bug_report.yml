@@ -1,0 +1,46 @@
+name: Bug report
+description: Report a reproducible problem
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this issue.
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Python version, and how you launched the app
+      placeholder: Windows 11, Python 3.11, run.bat
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Please list exact steps
+      placeholder: |
+        1. Open app
+        2. Select file ...
+        3. Click Run Clustering ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error logs or traceback
+      render: shell
