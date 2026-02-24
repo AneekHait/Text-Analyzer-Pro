@@ -54,6 +54,10 @@ python gui.py
 4. Click **Run Clustering**
 5. Edit suggested names (optional), then click **Save Results**
 
+![Text Analyzer Pro main window](image.png)
+
+Screenshot: the primary interface lets you pick files, tweak clustering parameters, run analysis, and monitor the status log.
+
 ## CLI usage
 
 ```bash
