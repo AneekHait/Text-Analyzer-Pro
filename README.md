@@ -10,6 +10,7 @@ Use this project for customer feedback clustering, survey response analysis, sup
 - Non-technical friendly GUI built with Tkinter
 - Auto keyword extraction and human-readable cluster naming
 - 2D cluster visualization with PCA or t-SNE
+- Advanced column-based wordcloud builder with preview and export
 - Optional CLI for scripting and repeatable workflows
 
 ## Features
@@ -19,6 +20,7 @@ Use this project for customer feedback clustering, survey response analysis, sup
 - Clustering algorithms: `kmeans`, `dbscan`, `agglomerative`
 - Cluster keyword extraction and suggested cluster names
 - Visualizations: PCA and t-SNE
+- Wordcloud builder with n-grams, stopword controls, top-term stats, PNG export, and term-table export
 - Save clustered output back to Excel
 - Persist models with `joblib`
 
@@ -53,6 +55,7 @@ python gui.py
 3. Select algorithm + parameters
 4. Click **Run Clustering**
 5. Edit suggested names (optional), then click **Save Results**
+6. Click **Generate Wordcloud** any time after loading a sheet to open the dedicated preview/export builder for the selected column
 
 ![Text Analyzer Pro main window](image.png)
 
@@ -74,6 +77,7 @@ More examples: `docs/usage.md`
 
 - `gui.py`: Tkinter GUI workflow
 - `cluster_tool.py`: clustering engine + CLI
+- `wordcloud_tool.py`: wordcloud text processing, rendering, and export helpers
 - `run.bat`: one-click Windows launcher
 - `docs/usage.md`: detailed usage and notes
 

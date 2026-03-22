@@ -6,6 +6,7 @@ from tkinter import ttk, filedialog, messagebox
 import joblib
 from datetime import datetime
 import numpy as np
+from PIL import ImageTk
 
 from cluster_tool import (
     load_excel,
@@ -17,6 +18,13 @@ from cluster_tool import (
     assign_cluster_names,
     visualize_embeddings,
     save_results_excel,
+)
+from wordcloud_tool import (
+    WordCloudConfig,
+    export_term_stats,
+    get_effective_stopwords,
+    prepare_wordcloud_data,
+    render_wordcloud,
 )
 
 
@@ -134,7 +142,15 @@ class ClusterGUI:
         
         self.vis_btn = ttk.Button(btn_frame, text="📊  Visualize", command=self.visualize_clusters, state="disabled")
         self.vis_btn.pack(side="left", padx=4)
-        
+
+        self.wordcloud_btn = ttk.Button(
+            btn_frame,
+            text="☁️  Generate Wordcloud",
+            command=self.open_wordcloud_builder,
+            state="disabled",
+        )
+        self.wordcloud_btn.pack(side="left", padx=4)
+
         self.save_model_btn = ttk.Button(btn_frame, text="💾  Save Model", command=self.save_model, state="disabled")
         self.save_model_btn.pack(side="left", padx=4)
         
@@ -199,6 +215,7 @@ class ClusterGUI:
         self.X = None
         self.model = None
         self.vectorizer = None
+        self.wordcloud_builder = None
 
     def _configure_styles(self):
         """Configure professional styling for ttk widgets"""
@@ -462,6 +479,7 @@ FOUNDATION (v0.1):
         except Exception as e:
             messagebox.showerror("Error", f"Failed to read Excel sheets: {e}")
             self.log_msg(f"✗ Error reading sheets: {e}")
+            self.wordcloud_btn.config(state="disabled")
     
     def _load_sheet(self, sheet_name):
         """Load data from the selected sheet"""
@@ -477,12 +495,18 @@ FOUNDATION (v0.1):
                 menu.add_command(label=c, command=lambda value=c: self.col_var.set(value))
             if cols:
                 self.col_var.set(cols[0])
+                self.wordcloud_btn.config(state="normal")
+            else:
+                self.wordcloud_btn.config(state="disabled")
             file_size_kb = os.path.getsize(self.current_file_path) / 1024
             self.log_msg(f"✓ Loaded sheet '{sheet_name}': {len(df)} rows, {len(cols)} columns, {file_size_kb:.1f} KB")
             self.log_msg(f"  Columns: {', '.join(cols)}")
+            if self.wordcloud_builder is not None:
+                self.wordcloud_builder.refresh_from_app()
         except Exception as e:
             messagebox.showerror("Error", f"Failed to load sheet: {e}")
             self.log_msg(f"✗ Error loading sheet: {e}")
+            self.wordcloud_btn.config(state="disabled")
 
     def run_clustering_thread(self):
         t = threading.Thread(target=self.run_clustering)
@@ -616,6 +640,19 @@ FOUNDATION (v0.1):
             self.log_msg(f"✗ Visualization failed: {str(e)}")
             messagebox.showerror("Visualization failed", str(e))
 
+    def open_wordcloud_builder(self):
+        if self.df is None:
+            messagebox.showwarning("No file", "Please select an Excel file and sheet first")
+            return
+
+        existing_builder = self.wordcloud_builder
+        if existing_builder is not None and existing_builder.is_alive:
+            existing_builder.refresh_from_app()
+            existing_builder.focus()
+            return
+
+        self.wordcloud_builder = WordCloudBuilderWindow(self)
+
     def save_with_names(self):
         if self.df is None or self.labels is None:
             messagebox.showwarning("Nothing to save", "Run clustering first")
@@ -671,6 +708,532 @@ FOUNDATION (v0.1):
         except Exception as e:
             self.log_msg(f"✗ Model save failed: {str(e)}")
             messagebox.showerror("Save Failed", f"Failed to save model: {e}")
+
+
+class WordCloudBuilderWindow:
+    PHRASE_OPTIONS = ("Unigrams", "Up to Bigrams", "Up to Trigrams")
+    BACKGROUND_OPTIONS = ("white", "ivory", "whitesmoke", "mintcream", "black", "midnightblue")
+    COLORMAP_OPTIONS = ("viridis", "plasma", "inferno", "magma", "cividis", "Set2", "tab10", "cubehelix")
+
+    def __init__(self, app):
+        self.app = app
+        self.window = tk.Toplevel(app.master)
+        self.window.title(f"{self.app.app_title} - Wordcloud Builder")
+        self.window.geometry("1280x780")
+        self.window.minsize(1120, 700)
+        self.window.protocol("WM_DELETE_WINDOW", self.close)
+
+        self.custom_stopwords = set()
+        self.current_stats_df = None
+        self.current_image = None
+        self.preview_photo = None
+        self.is_rendering = False
+
+        self.context_var = tk.StringVar(self.window, value="No active sheet")
+        self.status_var = tk.StringVar(self.window, value="Configure the controls, then generate a preview.")
+        self.stopword_count_var = tk.StringVar(self.window, value="Effective stopwords: 0")
+        self.column_var = tk.StringVar(self.window)
+        self.max_words_var = tk.StringVar(self.window, value="200")
+        self.min_frequency_var = tk.StringVar(self.window, value="1")
+        self.width_var = tk.StringVar(self.window, value="1200")
+        self.height_var = tk.StringVar(self.window, value="700")
+        self.phrase_mode_var = tk.StringVar(self.window, value=self.PHRASE_OPTIONS[0])
+        self.use_builtin_stopwords_var = tk.BooleanVar(self.window, value=True)
+        self.lowercase_var = tk.BooleanVar(self.window, value=True)
+        self.exclude_numeric_var = tk.BooleanVar(self.window, value=True)
+        self.background_var = tk.StringVar(self.window, value="white")
+        self.colormap_var = tk.StringVar(self.window, value="viridis")
+        self.stopword_entry_var = tk.StringVar(self.window)
+
+        self.total_rows_var = tk.StringVar(self.window, value="0")
+        self.usable_rows_var = tk.StringVar(self.window, value="0")
+        self.unique_terms_var = tk.StringVar(self.window, value="0")
+        self.term_occurrences_var = tk.StringVar(self.window, value="0")
+
+        self._build_layout()
+        self.refresh_from_app(reset_preview=False)
+        self._reset_preview_state("Generate a wordcloud to preview it here.", clear_summary=True)
+        self.update_stopword_count()
+        self.window.after(150, self.generate_wordcloud_thread)
+
+    @property
+    def is_alive(self):
+        try:
+            return bool(self.window.winfo_exists())
+        except tk.TclError:
+            return False
+
+    def focus(self):
+        if not self.is_alive:
+            return
+        self.window.deiconify()
+        self.window.lift()
+        self.window.focus_force()
+
+    def close(self):
+        if self.app.wordcloud_builder is self:
+            self.app.wordcloud_builder = None
+        if self.is_alive:
+            self.window.destroy()
+
+    def refresh_from_app(self, reset_preview=True):
+        if not self.is_alive:
+            return
+
+        columns = list(self.app.df.columns) if self.app.df is not None else []
+        current_choice = self.column_var.get().strip()
+        preferred_choice = self.app.col_var.get().strip()
+
+        self.column_combo["values"] = columns
+        if preferred_choice in columns:
+            self.column_var.set(preferred_choice)
+        elif current_choice in columns:
+            self.column_var.set(current_choice)
+        elif columns:
+            self.column_var.set(columns[0])
+        else:
+            self.column_var.set("")
+
+        file_name = os.path.basename(self.app.current_file_path) if self.app.current_file_path else "No file"
+        sheet_name = self.app.sheet_var.get().strip() or "No sheet"
+        column_name = self.column_var.get().strip() or "No column"
+        self.context_var.set(f"File: {file_name}    Sheet: {sheet_name}    Column: {column_name}")
+
+        if reset_preview:
+            self._reset_preview_state("Wordcloud context changed. Click Generate Preview to refresh.", clear_summary=True)
+
+        self.generate_btn.config(state="normal" if columns and not self.is_rendering else "disabled")
+
+    def _build_layout(self):
+        outer = ttk.Frame(self.window, padding=12, style="TFrame")
+        outer.pack(fill="both", expand=True)
+        outer.columnconfigure(0, weight=1)
+        outer.rowconfigure(1, weight=1)
+
+        header_frame = ttk.Frame(outer, style="TFrame")
+        header_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        header_frame.columnconfigure(0, weight=1)
+
+        ttk.Label(header_frame, text="☁️  Wordcloud Builder", style="Title.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(header_frame, textvariable=self.context_var, style="TLabel").grid(row=1, column=0, sticky="w", pady=(4, 0))
+
+        content_frame = ttk.Frame(outer, style="TFrame")
+        content_frame.grid(row=1, column=0, sticky="nsew")
+        content_frame.columnconfigure(0, weight=0)
+        content_frame.columnconfigure(1, weight=1)
+        content_frame.rowconfigure(0, weight=1)
+
+        left_panel = ttk.Frame(content_frame, style="Card.TFrame", padding=12)
+        left_panel.grid(row=0, column=0, sticky="nsw", padx=(0, 12))
+        right_panel = ttk.Frame(content_frame, style="Card.TFrame", padding=12)
+        right_panel.grid(row=0, column=1, sticky="nsew")
+        right_panel.columnconfigure(0, weight=1)
+        right_panel.rowconfigure(1, weight=1)
+
+        controls_frame = ttk.LabelFrame(left_panel, text="Controls", padding=10)
+        controls_frame.grid(row=0, column=0, sticky="ew")
+        controls_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(controls_frame, text="Source column:", style="Section.TLabel").grid(row=0, column=0, sticky="e", padx=(0, 8), pady=4)
+        self.column_combo = ttk.Combobox(controls_frame, textvariable=self.column_var, state="readonly", width=26)
+        self.column_combo.grid(row=0, column=1, sticky="ew", pady=4)
+        self.column_combo.bind("<<ComboboxSelected>>", lambda _event: self.refresh_from_app(reset_preview=True))
+
+        ttk.Label(controls_frame, text="Max words:", style="Section.TLabel").grid(row=1, column=0, sticky="e", padx=(0, 8), pady=4)
+        ttk.Entry(controls_frame, textvariable=self.max_words_var, width=12).grid(row=1, column=1, sticky="ew", pady=4)
+
+        ttk.Label(controls_frame, text="Min frequency:", style="Section.TLabel").grid(row=2, column=0, sticky="e", padx=(0, 8), pady=4)
+        ttk.Entry(controls_frame, textvariable=self.min_frequency_var, width=12).grid(row=2, column=1, sticky="ew", pady=4)
+
+        ttk.Label(controls_frame, text="Width:", style="Section.TLabel").grid(row=3, column=0, sticky="e", padx=(0, 8), pady=4)
+        ttk.Entry(controls_frame, textvariable=self.width_var, width=12).grid(row=3, column=1, sticky="ew", pady=4)
+
+        ttk.Label(controls_frame, text="Height:", style="Section.TLabel").grid(row=4, column=0, sticky="e", padx=(0, 8), pady=4)
+        ttk.Entry(controls_frame, textvariable=self.height_var, width=12).grid(row=4, column=1, sticky="ew", pady=4)
+
+        ttk.Label(controls_frame, text="Phrase mode:", style="Section.TLabel").grid(row=5, column=0, sticky="e", padx=(0, 8), pady=4)
+        ttk.Combobox(
+            controls_frame,
+            textvariable=self.phrase_mode_var,
+            values=self.PHRASE_OPTIONS,
+            state="readonly",
+            width=20,
+        ).grid(row=5, column=1, sticky="ew", pady=4)
+
+        ttk.Checkbutton(
+            controls_frame,
+            text="Use built-in stopwords",
+            variable=self.use_builtin_stopwords_var,
+            command=self.update_stopword_count,
+        ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(8, 2))
+        ttk.Checkbutton(
+            controls_frame,
+            text="Lowercase normalization",
+            variable=self.lowercase_var,
+        ).grid(row=7, column=0, columnspan=2, sticky="w", pady=2)
+        ttk.Checkbutton(
+            controls_frame,
+            text="Exclude numeric-only tokens",
+            variable=self.exclude_numeric_var,
+        ).grid(row=8, column=0, columnspan=2, sticky="w", pady=2)
+
+        ttk.Label(controls_frame, text="Background:", style="Section.TLabel").grid(row=9, column=0, sticky="e", padx=(0, 8), pady=(8, 4))
+        ttk.Combobox(
+            controls_frame,
+            textvariable=self.background_var,
+            values=self.BACKGROUND_OPTIONS,
+            state="readonly",
+            width=20,
+        ).grid(row=9, column=1, sticky="ew", pady=(8, 4))
+
+        ttk.Label(controls_frame, text="Colormap:", style="Section.TLabel").grid(row=10, column=0, sticky="e", padx=(0, 8), pady=4)
+        ttk.Combobox(
+            controls_frame,
+            textvariable=self.colormap_var,
+            values=self.COLORMAP_OPTIONS,
+            state="readonly",
+            width=20,
+        ).grid(row=10, column=1, sticky="ew", pady=4)
+
+        self.generate_btn = ttk.Button(controls_frame, text="Generate Preview", command=self.generate_wordcloud_thread)
+        self.generate_btn.grid(row=11, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+
+        stopwords_frame = ttk.LabelFrame(left_panel, text="Custom Stopwords", padding=10)
+        stopwords_frame.grid(row=1, column=0, sticky="ew", pady=(12, 0))
+        stopwords_frame.columnconfigure(0, weight=1)
+
+        entry_row = ttk.Frame(stopwords_frame, style="Card.TFrame")
+        entry_row.grid(row=0, column=0, sticky="ew")
+        entry_row.columnconfigure(0, weight=1)
+
+        ttk.Entry(entry_row, textvariable=self.stopword_entry_var).grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        ttk.Button(entry_row, text="Add", command=self.add_custom_stopwords).grid(row=0, column=1, sticky="e")
+
+        list_frame = ttk.Frame(stopwords_frame, style="Card.TFrame")
+        list_frame.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        list_frame.columnconfigure(0, weight=1)
+
+        self.stopwords_listbox = tk.Listbox(list_frame, height=6, exportselection=False)
+        self.stopwords_listbox.grid(row=0, column=0, sticky="ew")
+        stopwords_scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.stopwords_listbox.yview)
+        stopwords_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.stopwords_listbox.config(yscrollcommand=stopwords_scrollbar.set)
+
+        stopword_btn_row = ttk.Frame(stopwords_frame, style="Card.TFrame")
+        stopword_btn_row.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        ttk.Button(stopword_btn_row, text="Remove Selected", command=self.remove_selected_stopwords).pack(side="left")
+        ttk.Button(stopword_btn_row, text="Clear All", command=self.clear_custom_stopwords).pack(side="left", padx=(8, 0))
+        ttk.Label(stopwords_frame, textvariable=self.stopword_count_var, style="TLabel").grid(row=3, column=0, sticky="w", pady=(8, 0))
+
+        stats_frame = ttk.LabelFrame(left_panel, text="Quick Stats", padding=10)
+        stats_frame.grid(row=2, column=0, sticky="nsew", pady=(12, 0))
+        stats_frame.columnconfigure(1, weight=1)
+        left_panel.rowconfigure(2, weight=1)
+
+        ttk.Label(stats_frame, text="Total rows:", style="Section.TLabel").grid(row=0, column=0, sticky="w", pady=2)
+        ttk.Label(stats_frame, textvariable=self.total_rows_var, style="TLabel").grid(row=0, column=1, sticky="e", pady=2)
+        ttk.Label(stats_frame, text="Usable rows:", style="Section.TLabel").grid(row=1, column=0, sticky="w", pady=2)
+        ttk.Label(stats_frame, textvariable=self.usable_rows_var, style="TLabel").grid(row=1, column=1, sticky="e", pady=2)
+        ttk.Label(stats_frame, text="Unique terms:", style="Section.TLabel").grid(row=2, column=0, sticky="w", pady=2)
+        ttk.Label(stats_frame, textvariable=self.unique_terms_var, style="TLabel").grid(row=2, column=1, sticky="e", pady=2)
+        ttk.Label(stats_frame, text="Term occurrences:", style="Section.TLabel").grid(row=3, column=0, sticky="w", pady=2)
+        ttk.Label(stats_frame, textvariable=self.term_occurrences_var, style="TLabel").grid(row=3, column=1, sticky="e", pady=2)
+
+        ttk.Label(stats_frame, text="Top Terms", style="Section.TLabel").grid(row=4, column=0, columnspan=2, sticky="w", pady=(10, 6))
+        tree_frame = ttk.Frame(stats_frame, style="Card.TFrame")
+        tree_frame.grid(row=5, column=0, columnspan=2, sticky="nsew")
+        tree_frame.columnconfigure(0, weight=1)
+        stats_frame.rowconfigure(5, weight=1)
+
+        self.terms_tree = ttk.Treeview(tree_frame, columns=("term", "count", "share"), show="headings", height=10)
+        self.terms_tree.heading("term", text="Term")
+        self.terms_tree.heading("count", text="Count")
+        self.terms_tree.heading("share", text="Share")
+        self.terms_tree.column("term", width=180, anchor="w")
+        self.terms_tree.column("count", width=70, anchor="center")
+        self.terms_tree.column("share", width=80, anchor="center")
+        self.terms_tree.grid(row=0, column=0, sticky="nsew")
+        tree_scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=self.terms_tree.yview)
+        tree_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.terms_tree.configure(yscrollcommand=tree_scrollbar.set)
+
+        ttk.Label(right_panel, text="Preview", style="Title.TLabel").grid(row=0, column=0, sticky="w")
+
+        preview_frame = ttk.Frame(right_panel, style="Card.TFrame")
+        preview_frame.grid(row=1, column=0, sticky="nsew", pady=(8, 12))
+        preview_frame.columnconfigure(0, weight=1)
+        preview_frame.rowconfigure(0, weight=1)
+
+        self.preview_label = tk.Label(
+            preview_frame,
+            text="Generate a wordcloud to preview it here.",
+            bg="#ffffff",
+            fg="#555555",
+            relief="solid",
+            borderwidth=1,
+            font=("Segoe UI", 11),
+            wraplength=620,
+            justify="center",
+        )
+        self.preview_label.grid(row=0, column=0, sticky="nsew")
+
+        action_row = ttk.Frame(right_panel, style="Card.TFrame")
+        action_row.grid(row=2, column=0, sticky="ew")
+        self.save_png_btn = ttk.Button(action_row, text="Save PNG", command=self.save_png, state="disabled")
+        self.save_png_btn.pack(side="left")
+        self.export_terms_btn = ttk.Button(action_row, text="Export Terms", command=self.export_terms, state="disabled")
+        self.export_terms_btn.pack(side="left", padx=(8, 0))
+
+        ttk.Label(outer, textvariable=self.status_var, style="TLabel").grid(row=2, column=0, sticky="w", pady=(8, 0))
+
+    def add_custom_stopwords(self):
+        raw_value = self.stopword_entry_var.get().strip()
+        if not raw_value:
+            return
+
+        additions = [
+            item.strip().lower()
+            for item in raw_value.replace("\n", ",").split(",")
+            if item.strip()
+        ]
+        self.custom_stopwords.update(additions)
+        self.stopword_entry_var.set("")
+        self._refresh_stopword_listbox()
+        self.update_stopword_count()
+
+    def remove_selected_stopwords(self):
+        selected_indices = self.stopwords_listbox.curselection()
+        if not selected_indices:
+            return
+
+        selected_words = [self.stopwords_listbox.get(index) for index in selected_indices]
+        for word in selected_words:
+            self.custom_stopwords.discard(word)
+
+        self._refresh_stopword_listbox()
+        self.update_stopword_count()
+
+    def clear_custom_stopwords(self):
+        self.custom_stopwords.clear()
+        self._refresh_stopword_listbox()
+        self.update_stopword_count()
+
+    def update_stopword_count(self):
+        try:
+            config = self._build_config(validate_only=True)
+            effective_count = len(get_effective_stopwords(config))
+        except Exception:
+            effective_count = len(self.custom_stopwords)
+        self.stopword_count_var.set(f"Effective stopwords: {effective_count}")
+
+    def generate_wordcloud_thread(self):
+        if self.is_rendering:
+            return
+
+        try:
+            config = self._build_config()
+            column = self.column_var.get().strip()
+            texts = coerce_text_column(self.app.df[column]).tolist()
+        except Exception as e:
+            messagebox.showerror("Invalid Wordcloud Settings", str(e))
+            return
+
+        self.is_rendering = True
+        self.generate_btn.config(state="disabled")
+        self.save_png_btn.config(state="disabled")
+        self.export_terms_btn.config(state="disabled")
+        self.status_var.set("Generating preview...")
+        self.app.log_msg(f"Generating wordcloud for sheet '{self.app.sheet_var.get()}' and column '{column}'...")
+
+        worker = threading.Thread(
+            target=self._render_worker,
+            args=(column, texts, config),
+            daemon=True,
+        )
+        worker.start()
+
+    def _render_worker(self, column, texts, config):
+        try:
+            stats_df, summary = prepare_wordcloud_data(texts, config)
+            if stats_df.empty:
+                self.app.master.after(0, lambda: self._finish_empty_render(column, summary))
+                return
+
+            image = render_wordcloud(stats_df, config)
+            self.app.master.after(0, lambda: self._finish_render(column, stats_df, summary, image))
+        except Exception as e:
+            self.app.master.after(0, lambda error=str(e): self._finish_render_error(error))
+
+    def _finish_render(self, column, stats_df, summary, image):
+        if not self.is_alive:
+            return
+
+        self.current_stats_df = stats_df
+        self.current_image = image
+        self._update_summary(summary)
+        self._populate_terms_table(stats_df)
+        self._update_preview_image(image)
+        self.is_rendering = False
+        self.generate_btn.config(state="normal")
+        self.save_png_btn.config(state="normal")
+        self.export_terms_btn.config(state="normal")
+        self.status_var.set(f"Preview ready for column '{column}'.")
+        self.app.log_msg(f"✓ Wordcloud ready: {len(stats_df)} filtered terms from column '{column}'")
+
+    def _finish_empty_render(self, column, summary):
+        if not self.is_alive:
+            return
+
+        self._update_summary(summary)
+        self._populate_terms_table(None)
+        self._reset_preview_state("No terms remained after applying the current filters.")
+        self.is_rendering = False
+        self.generate_btn.config(state="normal")
+        self.status_var.set("No preview generated because no terms remained after filtering.")
+        self.app.log_msg(f"✗ Wordcloud skipped for column '{column}': no terms remained after filtering")
+        messagebox.showwarning(
+            "No Terms Available",
+            "The selected column is empty after applying the current filters. Adjust the controls and try again.",
+        )
+
+    def _finish_render_error(self, error_message):
+        if not self.is_alive:
+            return
+
+        self.is_rendering = False
+        self.generate_btn.config(state="normal")
+        self.status_var.set("Preview failed. See the error details and try again.")
+        self.app.log_msg(f"✗ Wordcloud generation failed: {error_message}")
+        messagebox.showerror("Wordcloud Generation Failed", error_message)
+
+    def save_png(self):
+        if self.current_image is None:
+            messagebox.showwarning("No Preview", "Generate a wordcloud preview first")
+            return
+
+        default_name = self._default_export_stem() + ".png"
+        path = filedialog.asksaveasfilename(
+            defaultextension=".png",
+            filetypes=[("PNG files", "*.png")],
+            initialfile=default_name,
+            title="Save Wordcloud PNG",
+        )
+        if not path:
+            return
+
+        try:
+            self.current_image.save(path, format="PNG")
+            self.app.log_msg(f"✓ Wordcloud image saved to {path}")
+            messagebox.showinfo("Saved", f"Saved wordcloud image to {path}")
+        except Exception as e:
+            self.app.log_msg(f"✗ Wordcloud image save failed: {str(e)}")
+            messagebox.showerror("Save Failed", f"Failed to save wordcloud image: {e}")
+
+    def export_terms(self):
+        if self.current_stats_df is None or self.current_stats_df.empty:
+            messagebox.showwarning("No Terms", "Generate a wordcloud preview first")
+            return
+
+        default_name = self._default_export_stem() + "_terms.xlsx"
+        path = filedialog.asksaveasfilename(
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx")],
+            initialfile=default_name,
+            title="Export Term Statistics",
+        )
+        if not path:
+            return
+
+        try:
+            saved_path = export_term_stats(self.current_stats_df, path)
+            self.app.log_msg(f"✓ Wordcloud terms exported to {saved_path}")
+            messagebox.showinfo("Exported", f"Exported wordcloud terms to {saved_path}")
+        except Exception as e:
+            self.app.log_msg(f"✗ Term export failed: {str(e)}")
+            messagebox.showerror("Export Failed", f"Failed to export term statistics: {e}")
+
+    def _build_config(self, validate_only=False):
+        if self.app.df is None:
+            raise ValueError("Load a sheet before opening the wordcloud builder.")
+
+        column = self.column_var.get().strip()
+        if not column:
+            raise ValueError("Select a source column for the wordcloud.")
+        if column not in self.app.df.columns:
+            raise ValueError(f"Column '{column}' is no longer available in the active sheet.")
+
+        config = WordCloudConfig(
+            max_words=int(self.max_words_var.get().strip() or "200"),
+            min_frequency=int(self.min_frequency_var.get().strip() or "1"),
+            width=int(self.width_var.get().strip() or "1200"),
+            height=int(self.height_var.get().strip() or "700"),
+            phrase_mode=self.phrase_mode_var.get().strip() or self.PHRASE_OPTIONS[0],
+            use_builtin_stopwords=bool(self.use_builtin_stopwords_var.get()),
+            lowercase=bool(self.lowercase_var.get()),
+            exclude_numeric=bool(self.exclude_numeric_var.get()),
+            background_color=self.background_var.get().strip() or "white",
+            colormap=self.colormap_var.get().strip() or "viridis",
+            custom_stopwords=set(self.custom_stopwords),
+        )
+
+        if not validate_only:
+            self.context_var.set(
+                f"File: {os.path.basename(self.app.current_file_path)}    "
+                f"Sheet: {self.app.sheet_var.get().strip() or 'No sheet'}    "
+                f"Column: {column}"
+            )
+        return config
+
+    def _refresh_stopword_listbox(self):
+        self.stopwords_listbox.delete(0, tk.END)
+        for word in sorted(self.custom_stopwords):
+            self.stopwords_listbox.insert(tk.END, word)
+
+    def _update_summary(self, summary):
+        self.total_rows_var.set(str(summary.get("total_rows", 0)))
+        self.usable_rows_var.set(str(summary.get("usable_rows", 0)))
+        self.unique_terms_var.set(str(summary.get("unique_terms", 0)))
+        self.term_occurrences_var.set(str(summary.get("kept_term_occurrences", 0)))
+
+    def _populate_terms_table(self, stats_df):
+        for item_id in self.terms_tree.get_children():
+            self.terms_tree.delete(item_id)
+
+        if stats_df is None or stats_df.empty:
+            return
+
+        for _index, row in stats_df.head(10).iterrows():
+            self.terms_tree.insert("", "end", values=(row["term"], int(row["count"]), f"{row['share']:.1%}"))
+
+    def _update_preview_image(self, image):
+        preview_image = image.copy()
+        preview_image.thumbnail((760, 560))
+        self.preview_photo = ImageTk.PhotoImage(preview_image)
+        self.preview_label.config(image=self.preview_photo, text="", bg="#ffffff")
+
+    def _reset_preview_state(self, message, clear_summary=False):
+        self.current_stats_df = None
+        self.current_image = None
+        self.preview_photo = None
+        self.preview_label.config(image="", text=message, bg="#ffffff")
+        self.save_png_btn.config(state="disabled")
+        self.export_terms_btn.config(state="disabled")
+        self._populate_terms_table(None)
+        if clear_summary:
+            self._update_summary({})
+
+    def _default_export_stem(self):
+        base_name = os.path.splitext(os.path.basename(self.app.current_file_path or "wordcloud"))[0]
+        sheet_name = self._slugify(self.app.sheet_var.get().strip() or "sheet")
+        column_name = self._slugify(self.column_var.get().strip() or "column")
+        return f"{base_name}_{sheet_name}_{column_name}_wordcloud"
+
+    def _slugify(self, value):
+        characters = [char.lower() if char.isalnum() else "_" for char in value]
+        slug = "".join(characters).strip("_")
+        while "__" in slug:
+            slug = slug.replace("__", "_")
+        return slug or "item"
 
 
 from ttkthemes import ThemedTk

@@ -6,6 +6,9 @@ GUI (`gui.py`)
 - Launch the GUI and use the "Select Excel file..." button to choose an Excel (.xlsx) file.
 - Select the text column from the dropdown, choose a clustering algorithm and parameters, then click "Run clustering".
 - After clustering finishes, edit cluster names if desired and click "Save results" to write a new Excel file with `cluster_label` and `cluster_name` columns.
+- Use "Generate Wordcloud" after loading any sheet to open the dedicated wordcloud builder for the active column.
+- In the wordcloud builder, adjust max words, min frequency, output size, phrase mode, stopwords, normalization, and styling before clicking "Generate Preview".
+- Save the rendered cloud as PNG or export the filtered term-frequency table as Excel.
 
 CLI (`cluster_tool.py`)
 - The CLI supports the following arguments:
@@ -40,3 +43,4 @@ Notes
 - Tkinter is required for the GUI. On Debian/Ubuntu: `sudo apt-get install python3-tk`.
 - If your Excel file has multiple sheets, pass `--sheet` with a name or index.
 - Visualization uses matplotlib and seaborn; large datasets may be slow.
+- Wordcloud previews require the `wordcloud` package from `requirements.txt`.

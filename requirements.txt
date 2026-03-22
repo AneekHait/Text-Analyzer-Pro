@@ -4,4 +4,6 @@ openpyxl
 matplotlib
 seaborn
 joblib
+Pillow
 ttkthemes
+wordcloud
