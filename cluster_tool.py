@@ -2,10 +2,10 @@
 """
 cluster_tool.py
 
-A CLI tool to cluster text data from an Excel file and write cluster labels back to Excel.
+A CLI tool to cluster text data from Excel, CSV, or JSON files and write cluster labels back to a table file.
 
 Features:
-- Load Excel file and allow user to choose a text column
+- Load a table file and allow user to choose a text column
 - Preprocessing: lowercasing, basic normalization (non-string -> string), drop/handle missing
 - TF-IDF vectorization (with sklearn, english stop words)
 - Clustering: KMeans, DBSCAN, Agglomerative
@@ -15,11 +15,15 @@ Features:
 
 Usage examples:
   python cluster_tool.py --input data.xlsx --column comments --algorithm kmeans --n_clusters 5 --output clustered.xlsx
+  python cluster_tool.py --input data.csv --column comments --algorithm kmeans --n_clusters 5 --output clustered.csv
 """
 
 import argparse
 import os
-from typing import List, Optional, Tuple, Dict
+import re
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 import numpy as np
@@ -32,13 +36,101 @@ import seaborn as sns
 import joblib
 
 
+URL_RE = re.compile(r"https?://\S+|www\.\S+", flags=re.IGNORECASE)
+EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", flags=re.IGNORECASE)
+PUNCT_RE = re.compile(r"[^\w\s]")
+NUMBER_RE = re.compile(r"\d+")
+WHITESPACE_RE = re.compile(r"\s+")
+
+
+@dataclass
+class TextCleaningConfig:
+    replace_missing: bool = True
+    missing_value_text: str = ""
+    trim_whitespace: bool = True
+    lowercase: bool = True
+    collapse_whitespace: bool = True
+    remove_punctuation: bool = False
+    remove_numbers: bool = False
+    remove_urls: bool = False
+    remove_emails: bool = False
+    regex_pattern: str = ""
+    regex_replacement: str = ""
+    dedupe_cleaned_rows: bool = False
+
+    def __post_init__(self):
+        self.missing_value_text = str(self.missing_value_text)
+        self.regex_pattern = str(self.regex_pattern or "")
+        self.regex_replacement = str(self.regex_replacement or "")
+        if self.regex_pattern:
+            try:
+                re.compile(self.regex_pattern)
+            except re.error as exc:
+                raise ValueError(f"Invalid regex pattern: {exc}") from exc
+
+
+@dataclass
+class TextCleaningResult:
+    cleaned_texts: List[str]
+    cluster_input_texts: List[str]
+    kept_indices: List[int]
+    representative_index_by_row: List[Optional[int]]
+    stats: Dict[str, Any]
+    preview_rows: List[Dict[str, str]] = field(default_factory=list)
+
+
+SUPPORTED_INPUT_EXTENSIONS = {".xlsx", ".xls", ".csv", ".json"}
+SINGLE_TABLE_SHEET_NAME = "Data"
+
+
+def get_file_extension(path: str) -> str:
+    return os.path.splitext(path)[1].lower()
+
+
+def _coerce_json_frame(raw_json: Any) -> pd.DataFrame:
+    if isinstance(raw_json, pd.DataFrame):
+        return raw_json
+    if isinstance(raw_json, pd.Series):
+        return raw_json.to_frame()
+    if isinstance(raw_json, list):
+        return pd.json_normalize(raw_json)
+    if isinstance(raw_json, dict):
+        return pd.json_normalize(raw_json)
+    raise ValueError("Unsupported JSON structure. Expected an object, array, or tabular JSON payload.")
+
+
+def load_table(path: str, sheet_name: Optional[str] = None) -> pd.DataFrame:
+    ext = get_file_extension(path)
+    if ext in {".xlsx", ".xls"}:
+        if sheet_name is None:
+            return pd.read_excel(path, engine="openpyxl")
+        return pd.read_excel(path, sheet_name=sheet_name, engine="openpyxl")
+    if ext == ".csv":
+        return pd.read_csv(path)
+    if ext == ".json":
+        try:
+            return _coerce_json_frame(pd.read_json(path))
+        except ValueError:
+            return _coerce_json_frame(pd.read_json(path, lines=True))
+    raise ValueError(
+        f"Unsupported file type '{ext or '(none)'}'. Supported types: Excel (.xlsx, .xls), CSV (.csv), JSON (.json)."
+    )
+
+
+def get_sheet_names(path: str) -> List[str]:
+    ext = get_file_extension(path)
+    if ext in {".xlsx", ".xls"}:
+        workbook = pd.ExcelFile(path, engine="openpyxl")
+        return workbook.sheet_names
+    if ext in {".csv", ".json"}:
+        return [SINGLE_TABLE_SHEET_NAME]
+    raise ValueError(
+        f"Unsupported file type '{ext or '(none)'}'. Supported types: Excel (.xlsx, .xls), CSV (.csv), JSON (.json)."
+    )
+
+
 def load_excel(path: str, sheet_name: Optional[str] = None) -> pd.DataFrame:
-    # pandas.read_excel(..., sheet_name=None) returns a dict of DataFrames.
-    # If sheet_name is None (user didn't specify), call read_excel without the
-    # sheet_name parameter so pandas returns the first sheet as a DataFrame.
-    if sheet_name is None:
-        return pd.read_excel(path, engine="openpyxl")
-    return pd.read_excel(path, sheet_name=sheet_name, engine="openpyxl")
+    return load_table(path, sheet_name=sheet_name)
 
 
 def coerce_text_column(series: pd.Series) -> pd.Series:
@@ -46,10 +138,91 @@ def coerce_text_column(series: pd.Series) -> pd.Series:
     return series.fillna("").astype(str)
 
 
-def preprocess_texts(texts: List[str]) -> List[str]:
-    # Basic preprocessing: lowercase and strip
-    processed = [t.lower().strip() for t in texts]
-    return processed
+def get_default_text_cleaning_config() -> TextCleaningConfig:
+    return TextCleaningConfig()
+
+
+def preprocess_texts(texts: List[str], config: Optional[TextCleaningConfig] = None) -> List[str]:
+    config = config or get_default_text_cleaning_config()
+    return [clean_text_value(text, config) for text in texts]
+
+
+def clean_text_value(value: Any, config: Optional[TextCleaningConfig] = None) -> str:
+    config = config or get_default_text_cleaning_config()
+
+    if pd.isna(value):
+        text = config.missing_value_text if config.replace_missing else ""
+    else:
+        text = str(value)
+
+    if config.trim_whitespace:
+        text = text.strip()
+    if config.lowercase:
+        text = text.lower()
+    if config.remove_urls:
+        text = URL_RE.sub(" ", text)
+    if config.remove_emails:
+        text = EMAIL_RE.sub(" ", text)
+    if config.regex_pattern:
+        text = re.sub(config.regex_pattern, config.regex_replacement, text)
+    if config.remove_punctuation:
+        text = PUNCT_RE.sub(" ", text)
+    if config.remove_numbers:
+        text = NUMBER_RE.sub(" ", text)
+    if config.collapse_whitespace:
+        text = WHITESPACE_RE.sub(" ", text)
+    if config.trim_whitespace or config.collapse_whitespace:
+        text = text.strip()
+    return text
+
+
+def prepare_text_cleaning(texts: List[Any], config: Optional[TextCleaningConfig] = None, sample_size: int = 5) -> TextCleaningResult:
+    config = config or get_default_text_cleaning_config()
+    raw_texts = ["" if pd.isna(value) else str(value) for value in texts]
+    cleaned_texts = [clean_text_value(value, config) for value in texts]
+
+    kept_indices: List[int] = []
+    representative_index_by_row: List[Optional[int]] = []
+    seen_cleaned: Dict[str, int] = {}
+    deduped_row_count = 0
+
+    for index, cleaned in enumerate(cleaned_texts):
+        if not cleaned:
+            representative_index_by_row.append(None)
+            continue
+
+        if config.dedupe_cleaned_rows and cleaned in seen_cleaned:
+            representative_index_by_row.append(seen_cleaned[cleaned])
+            deduped_row_count += 1
+            continue
+
+        seen_cleaned[cleaned] = index
+        kept_indices.append(index)
+        representative_index_by_row.append(index)
+
+    cluster_input_texts = [cleaned_texts[index] for index in kept_indices]
+    empty_count = sum(1 for item in cleaned_texts if not item)
+    preview_rows = [
+        {"raw": raw_texts[index], "cleaned": cleaned_texts[index]}
+        for index in range(min(sample_size, len(cleaned_texts)))
+    ]
+
+    stats = {
+        "source_row_count": len(raw_texts),
+        "cleaned_row_count": len(cleaned_texts),
+        "kept_row_count": len(kept_indices),
+        "deduped_row_count": deduped_row_count,
+        "empty_row_count": empty_count,
+        "cleaned_column_name_suffix": "_cleaned",
+    }
+    return TextCleaningResult(
+        cleaned_texts=cleaned_texts,
+        cluster_input_texts=cluster_input_texts,
+        kept_indices=kept_indices,
+        representative_index_by_row=representative_index_by_row,
+        stats=stats,
+        preview_rows=preview_rows,
+    )
 
 
 def vectorize_texts(texts: List[str], max_features: Optional[int] = 2000) -> Tuple[TfidfVectorizer, np.ndarray]:
@@ -145,32 +318,53 @@ def visualize_embeddings(X, labels: np.ndarray, method: str = "pca", perplexity:
     plt.close()
 
 
-def save_results_excel(df: pd.DataFrame, out_path: str):
-    try:
-        df.to_excel(out_path, index=False, engine="openpyxl")
-        print(f"Saved results to {out_path}")
-    except PermissionError:
-        # Fall back to a new filename if the target file is open or not writable
-        from datetime import datetime
+def save_results(df: pd.DataFrame, out_path: str) -> str:
+    ext = get_file_extension(out_path)
 
-        base, ext = os.path.splitext(out_path)
+    def _write(target_path: str):
+        if ext == ".xlsx":
+            df.to_excel(target_path, index=False, engine="openpyxl")
+            return
+        if ext == ".xls":
+            raise ValueError("Writing .xls output is not supported. Please save as .xlsx, .csv, or .json.")
+        if ext == ".csv":
+            df.to_csv(target_path, index=False)
+            return
+        if ext == ".json":
+            df.to_json(target_path, orient="records", indent=2, force_ascii=False)
+            return
+        raise ValueError(
+            f"Unsupported output type '{ext or '(none)'}'. Supported types: Excel (.xlsx), CSV (.csv), JSON (.json)."
+        )
+
+    try:
+        _write(out_path)
+        print(f"Saved results to {out_path}")
+        return out_path
+    except PermissionError:
+        base, original_ext = os.path.splitext(out_path)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        alt_path = f"{base}_writable_{timestamp}{ext}"
-        df.to_excel(alt_path, index=False, engine="openpyxl")
+        alt_path = f"{base}_writable_{timestamp}{original_ext}"
+        _write(alt_path)
         print(f"Could not overwrite {out_path} (permission denied). Saved to {alt_path} instead.")
+        return alt_path
+
+
+def save_results_excel(df: pd.DataFrame, out_path: str):
+    return save_results(df, out_path)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Cluster text data from an Excel file and write cluster labels back to Excel.")
-    parser.add_argument("--input", "-i", required=True, help="Input Excel file path")
-    parser.add_argument("--sheet", "-s", default=None, help="Sheet name or index (optional)")
+    parser = argparse.ArgumentParser(description="Cluster text data from Excel, CSV, or JSON files and write cluster labels back to a table file.")
+    parser.add_argument("--input", "-i", required=True, help="Input file path (.xlsx, .xls, .csv, .json)")
+    parser.add_argument("--sheet", "-s", default=None, help="Sheet name or index for Excel files (optional)")
     parser.add_argument("--column", "-c", required=True, help="Text column name to cluster")
     parser.add_argument("--algorithm", "-a", choices=["kmeans", "dbscan", "agglomerative"], default="kmeans")
     parser.add_argument("--n_clusters", "-k", type=int, default=5, help="Number of clusters (for kmeans/agglomerative)")
     parser.add_argument("--eps", type=float, default=0.5, help="DBSCAN eps parameter")
     parser.add_argument("--min_samples", type=int, default=5, help="DBSCAN min_samples")
     parser.add_argument("--max_features", type=int, default=2000, help="Max features for TF-IDF")
-    parser.add_argument("--output", "-o", default=None, help="Output Excel path (optional) — defaults to input + _clustered.xlsx")
+    parser.add_argument("--output", "-o", default=None, help="Output path (optional) — defaults to input + _clustered with a matching supported extension")
     parser.add_argument("--visualize", "-v", action="store_true", help="Visualize clusters (PCA)")
     parser.add_argument("--vis_method", choices=["pca", "tsne"], default="pca", help="Visualization method")
     parser.add_argument("--top_n", type=int, default=10, help="Top keywords per cluster")
@@ -184,9 +378,9 @@ def main():
     if not os.path.isfile(args.input):
         raise FileNotFoundError(f"Input file not found: {args.input}")
 
-    df = load_excel(args.input, sheet_name=args.sheet)
+    df = load_table(args.input, sheet_name=args.sheet)
     if args.column not in df.columns:
-        raise ValueError(f"Column '{args.column}' not found in Excel. Available columns: {list(df.columns)}")
+        raise ValueError(f"Column '{args.column}' not found in input data. Available columns: {list(df.columns)}")
 
     text_series = coerce_text_column(df[args.column])
     processed = preprocess_texts(text_series.tolist())
@@ -197,8 +391,10 @@ def main():
     if not any(s.strip() for s in processed):
         print("Warning: all texts are empty after preprocessing. Creating a default label of -1 for all rows.")
         df["cluster_label"] = -1
-        out_path = args.output or os.path.splitext(args.input)[0] + "_clustered.xlsx"
-        save_results_excel(df, out_path)
+        input_ext = get_file_extension(args.input)
+        default_ext = input_ext if input_ext in {".xlsx", ".csv", ".json"} else ".xlsx"
+        out_path = args.output or os.path.splitext(args.input)[0] + "_clustered" + default_ext
+        save_results(df, out_path)
         return
 
     vectorizer, X = vectorize_texts(processed, max_features=args.max_features)
@@ -209,8 +405,10 @@ def main():
 
     df["cluster_label"] = labels
 
-    out_path = args.output or os.path.splitext(args.input)[0] + "_clustered.xlsx"
-    save_results_excel(df, out_path)
+    input_ext = get_file_extension(args.input)
+    default_ext = input_ext if input_ext in {".xlsx", ".csv", ".json"} else ".xlsx"
+    out_path = args.output or os.path.splitext(args.input)[0] + "_clustered" + default_ext
+    save_results(df, out_path)
 
     # Top keywords per cluster and assign descriptive names
     cluster_names = {}

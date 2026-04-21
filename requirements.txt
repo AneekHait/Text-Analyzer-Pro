@@ -5,5 +5,5 @@ matplotlib
 seaborn
 joblib
 Pillow
-ttkthemes
+PySide6
 wordcloud

@@ -1,13 +1,13 @@
 # Text Clustering Tool (Text Analyzer Pro)
 
-Python desktop GUI for **text clustering from Excel files** using **TF-IDF**, **KMeans**, **DBSCAN**, and **Agglomerative Clustering**.
+Python desktop GUI for **text clustering from Excel, CSV, and JSON files** using **TF-IDF**, **KMeans**, **DBSCAN**, and **Agglomerative Clustering**.
 
 Use this project for customer feedback clustering, survey response analysis, support ticket grouping, and general NLP text analysis on tabular data.
 
 ## Why this project
 
-- Works directly with Excel workbooks (`.xlsx`) and multiple sheets
-- Non-technical friendly GUI built with Tkinter
+- Works directly with Excel workbooks (`.xlsx`, `.xls`), CSV, and JSON tabular data
+- Non-technical friendly desktop GUI built with PySide6
 - Auto keyword extraction and human-readable cluster naming
 - 2D cluster visualization with PCA or t-SNE
 - Advanced column-based wordcloud builder with preview and export
@@ -15,13 +15,13 @@ Use this project for customer feedback clustering, survey response analysis, sup
 
 ## Features
 
-- Multi-sheet Excel support; pick sheet + text column
+- Excel multi-sheet support plus CSV/JSON table loading
 - Text preprocessing and TF-IDF vectorization
 - Clustering algorithms: `kmeans`, `dbscan`, `agglomerative`
 - Cluster keyword extraction and suggested cluster names
 - Visualizations: PCA and t-SNE
 - Wordcloud builder with n-grams, stopword controls, top-term stats, PNG export, and term-table export
-- Save clustered output back to Excel
+- Save clustered output back to Excel, CSV, or JSON
 - Persist models with `joblib`
 
 ## Quickstart
@@ -50,8 +50,8 @@ python gui.py
 
 ## GUI usage
 
-1. Click **Select Excel file...**
-2. Choose the sheet and text column
+1. Click **Select File...**
+2. Choose the sheet or table and text column
 3. Select algorithm + parameters
 4. Click **Run Clustering**
 5. Edit suggested names (optional), then click **Save Results**
@@ -69,13 +69,16 @@ python cluster_tool.py -i data.xlsx -c comments -a kmeans -k 5 -o data_clustered
 
 # DBSCAN
 python cluster_tool.py -i data.xlsx -c comments -a dbscan --eps 0.4 --min_samples 3
+
+# CSV
+python cluster_tool.py -i data.csv -c comments -a kmeans -k 5 -o data_clustered.csv
 ```
 
 More examples: `docs/usage.md`
 
 ## Project files
 
-- `gui.py`: Tkinter GUI workflow
+- `gui.py`: PySide6 GUI workflow
 - `cluster_tool.py`: clustering engine + CLI
 - `wordcloud_tool.py`: wordcloud text processing, rendering, and export helpers
 - `run.bat`: one-click Windows launcher
