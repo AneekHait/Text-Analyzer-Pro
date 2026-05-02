@@ -1,9 +1,15 @@
 pandas
 scikit-learn
+scipy
 openpyxl
+xlrd
+pyxlsb
+odfpy
 matplotlib
 seaborn
 joblib
 Pillow
 PySide6
+qtawesome
 wordcloud
+hdbscan

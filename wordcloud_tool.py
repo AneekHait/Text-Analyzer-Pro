@@ -272,7 +272,13 @@ def get_template_names() -> Tuple[str, ...]:
     return tuple(BUILTIN_TEMPLATES.keys())
 
 
+_FONT_CHOICES_CACHE: Tuple[Tuple[str, str], ...] = ()
+
+
 def get_font_choices() -> Tuple[Tuple[str, str], ...]:
+    global _FONT_CHOICES_CACHE
+    if _FONT_CHOICES_CACHE:
+        return _FONT_CHOICES_CACHE
     search_roots = []
     windir = os.environ.get("WINDIR")
     if windir:
@@ -327,7 +333,8 @@ def get_font_choices() -> Tuple[Tuple[str, str], ...]:
                     break
             if label in seen_labels:
                 break
-    return tuple(resolved)
+    _FONT_CHOICES_CACHE = tuple(resolved)
+    return _FONT_CHOICES_CACHE
 
 
 def get_template_config(name: str) -> WordCloudConfig:
@@ -771,3 +778,382 @@ def _normalize_hex_color(value: str) -> str:
     if len(text) == 4:
         text = "#" + "".join(char * 2 for char in text[1:])
     return text.lower()
+
+
+# ============================================================================
+# Distributable-compatible wordcloud API
+# ============================================================================
+
+# Gradient color schemes (matplotlib colormaps)
+WORDCLOUD_GRADIENT_SCHEMES = {
+    "Corporate Blue": "Blues",
+    "Navy Gradient": "PuBu",
+    "Slate": "Greys",
+    "Ocean": "GnBu",
+    "Forest": "Greens",
+    "Earth Tones": "YlOrBr",
+    "Lavender": "Purples",
+    "Sunset": "YlOrRd",
+    "Fire": "OrRd",
+    "Berry": "RdPu",
+    "Viridis": "viridis",
+    "Plasma": "plasma",
+    "Magma": "magma",
+    "Inferno": "inferno",
+    "Cool": "cool",
+    "Warm": "autumn",
+    "Grayscale": "gray",
+}
+
+WORDCLOUD_MULTI_COLOR_PALETTES = {
+    "Rainbow Mix": ["#e74c3c", "#f39c12", "#f1c40f", "#2ecc71", "#3498db", "#9b59b6"],
+    "Candy": ["#ff6b6b", "#feca57", "#48dbfb", "#ff9ff3", "#54a0ff", "#5f27cd"],
+    "Neon": ["#39ff14", "#ff073a", "#00f7ff", "#ff00ff", "#ffff00", "#ff6600"],
+    "Pastel Mix": ["#a8e6cf", "#dcedc1", "#ffd3b6", "#ffaaa5", "#d5aaff", "#a0c4ff"],
+    "Primary Colors": ["#e74c3c", "#3498db", "#f1c40f", "#2ecc71"],
+    "Ocean Breeze": ["#0077b6", "#00b4d8", "#90e0ef", "#48cae4", "#023e8a"],
+    "Autumn Leaves": ["#d4a373", "#e07a5f", "#f2cc8f", "#81b29a", "#3d405b"],
+    "Berry Blast": ["#7209b7", "#b5179e", "#f72585", "#3a0ca3", "#560bad"],
+    "Mint & Coral": ["#00b894", "#00cec9", "#fab1a0", "#e17055", "#81ecec"],
+    "Sunset Beach": ["#ff6b35", "#f7c59f", "#004e89", "#1a659e", "#ff9f1c"],
+    "Forest Floor": ["#2d6a4f", "#40916c", "#52b788", "#74c69d", "#95d5b2"],
+    "Vintage": ["#6b705c", "#a5a58d", "#b7b7a4", "#ffe8d6", "#ddbea9"],
+    "Tech": ["#00d4ff", "#7928ca", "#ff0080", "#00ff88", "#ff6b6b"],
+    "Earthy": ["#bc6c25", "#dda15e", "#606c38", "#283618", "#fefae0"],
+}
+
+WORDCLOUD_COLOR_SCHEMES = {
+    **WORDCLOUD_GRADIENT_SCHEMES,
+    **WORDCLOUD_MULTI_COLOR_PALETTES,
+}
+
+WORDCLOUD_BACKGROUNDS = {
+    "White": "white",
+    "Off-White": "#f8f8f8",
+    "Light Gray": "#e0e0e0",
+    "Dark Gray": "#2d2d2d",
+    "Black": "black",
+    "Navy": "#1a1a2e",
+    "Cream": "#fffef0",
+    "Light Blue": "#e3f2fd",
+    "Transparent": None,
+}
+
+WORDCLOUD_SHAPES = {
+    "Rectangle": "rectangle",
+    "Circle": "circle",
+    "Oval": "oval",
+    "Rounded Rectangle": "rounded_rect",
+    "Diamond": "diamond",
+    "Heart": "heart",
+    "Star": "star",
+    "Cloud": "cloud",
+    "Hexagon": "hexagon",
+    "Triangle": "triangle",
+}
+
+
+def create_shape_mask(shape: str, width: int = 1920, height: int = 1080) -> Optional[np.ndarray]:
+    """Create a mask array for the given shape (distributable-compatible).
+
+    Args:
+        shape: Shape value from WORDCLOUD_SHAPES (e.g. "circle", "heart")
+        width: Image width
+        height: Image height
+
+    Returns:
+        Numpy array mask (0 = word area, 255 = excluded) or None for rectangle.
+    """
+    if shape == "rectangle" or shape is None:
+        return None
+
+    mask = np.ones((height, width), dtype=np.uint8) * 255
+    cx, cy = width // 2, height // 2
+    rx, ry = width // 2 - 50, height // 2 - 50
+
+    if shape == "circle":
+        r = min(rx, ry)
+        y, x = np.ogrid[:height, :width]
+        dist = np.sqrt((x - cx) ** 2 + (y - cy) ** 2)
+        mask[dist <= r] = 0
+    elif shape == "oval":
+        y, x = np.ogrid[:height, :width]
+        dist = ((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2
+        mask[dist <= 1] = 0
+    elif shape == "rounded_rect":
+        corner_r = min(rx, ry) // 4
+        mask[cy - ry + corner_r : cy + ry - corner_r, cx - rx : cx + rx] = 0
+        mask[cy - ry : cy + ry, cx - rx + corner_r : cx + rx - corner_r] = 0
+        for dx, dy in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+            corner_cx = cx + dx * (rx - corner_r)
+            corner_cy = cy + dy * (ry - corner_r)
+            y, x = np.ogrid[:height, :width]
+            dist = np.sqrt((x - corner_cx) ** 2 + (y - corner_cy) ** 2)
+            mask[dist <= corner_r] = 0
+    elif shape == "diamond":
+        y, x = np.ogrid[:height, :width]
+        dist = np.abs(x - cx) / rx + np.abs(y - cy) / ry
+        mask[dist <= 1] = 0
+    elif shape == "heart":
+        y, x = np.ogrid[:height, :width]
+        xn = (x - cx) / (rx * 0.8)
+        yn = (cy - y) / (ry * 0.9)
+        heart = (xn**2 + yn**2 - 1) ** 3 - xn**2 * yn**3
+        mask[heart <= 0] = 0
+    elif shape == "star":
+        points_outer, points_inner = [], []
+        for i in range(5):
+            angle_outer = math.radians(90 + i * 72)
+            angle_inner = math.radians(90 + i * 72 + 36)
+            points_outer.append((cx + int(rx * 0.95 * math.cos(angle_outer)),
+                                 cy - int(ry * 0.95 * math.sin(angle_outer))))
+            points_inner.append((cx + int(rx * 0.4 * math.cos(angle_inner)),
+                                 cy - int(ry * 0.4 * math.sin(angle_inner))))
+        star_points = []
+        for i in range(5):
+            star_points.append(points_outer[i])
+            star_points.append(points_inner[i])
+        _fill_shape_polygon(mask, star_points, 0)
+    elif shape == "cloud":
+        circles = [
+            (cx - rx * 0.5, cy, min(rx, ry) * 0.5),
+            (cx + rx * 0.5, cy, min(rx, ry) * 0.5),
+            (cx, cy - ry * 0.3, min(rx, ry) * 0.55),
+            (cx - rx * 0.25, cy - ry * 0.15, min(rx, ry) * 0.45),
+            (cx + rx * 0.25, cy - ry * 0.15, min(rx, ry) * 0.45),
+            (cx, cy + ry * 0.2, min(rx, ry) * 0.4),
+        ]
+        y, x = np.ogrid[:height, :width]
+        for ccx, ccy, cr in circles:
+            dist = np.sqrt((x - ccx) ** 2 + (y - ccy) ** 2)
+            mask[dist <= cr] = 0
+    elif shape == "hexagon":
+        points = []
+        for i in range(6):
+            angle = math.radians(60 * i)
+            points.append((cx + int(rx * math.cos(angle)),
+                           cy + int(ry * math.sin(angle))))
+        _fill_shape_polygon(mask, points, 0)
+    elif shape == "triangle":
+        points = [
+            (cx, cy - int(ry * 0.95)),
+            (cx - int(rx * 0.95), cy + int(ry * 0.7)),
+            (cx + int(rx * 0.95), cy + int(ry * 0.7)),
+        ]
+        _fill_shape_polygon(mask, points, 0)
+
+    return mask
+
+
+def _fill_shape_polygon(mask: np.ndarray, points, value: int):
+    """Fill a polygon in the mask using PIL scanline."""
+    height, width = mask.shape
+    img = Image.new("L", (width, height), 255)
+    draw = ImageDraw.Draw(img)
+    draw.polygon(points, fill=value)
+    mask[:] = np.array(img)
+
+
+def _bg_luminance(color) -> float:
+    """Perceived luminance (0..1) for a CSS color string. Treats transparent
+    / None as light (most decks use light slides)."""
+    if color is None or color == "transparent":
+        return 1.0
+    try:
+        rgb = ImageColor.getrgb(color)[:3]
+    except (ValueError, TypeError):
+        return 1.0
+    r, g, b = (c / 255.0 for c in rgb)
+    return 0.299 * r + 0.587 * g + 0.114 * b
+
+
+def _create_contrast_aware_gradient_color_func(colormap_name: str, background_color):
+    """Build a color_func that samples a matplotlib colormap, but only within
+    a sub-range that contrasts against the chosen background.
+
+    WordCloud's default `colormap=...` uniformly samples [0..1], so on a white
+    background the low end of e.g. ``Blues`` produces near-invisible pale text.
+    This helper clips the sampling range so even the rarest words read clearly.
+    """
+    import matplotlib.cm as mpl_cm
+
+    cmap = mpl_cm.get_cmap(colormap_name)
+    lum = _bg_luminance(background_color)
+    if lum > 0.65:
+        # Light background: keep darker end of the gradient.
+        low, high = 0.45, 1.0
+    elif lum < 0.35:
+        # Dark background: keep brighter end.
+        low, high = 0.0, 0.55
+    else:
+        # Medium: compress both ends slightly.
+        low, high = 0.25, 0.9
+
+    def color_func(word, font_size, position, orientation, random_state=None, **kwargs):
+        if random_state is None:
+            random_state = np.random.RandomState()
+        t = random_state.uniform(low, high)
+        r, g, b = (int(c * 255) for c in cmap(t)[:3])
+        return f"rgb({r}, {g}, {b})"
+
+    return color_func
+
+
+def _create_wc_color_func(palette):
+    """Create a color function that randomly selects from a palette list."""
+    def color_func(word, font_size, position, orientation, random_state=None, **kwargs):
+        return random.choice(palette)
+    return color_func
+
+
+def generate_wordcloud(
+    texts,
+    colormap="Blues",
+    background_color="white",
+    max_words=200,
+    width=1920,
+    height=1080,
+    mask=None,
+    font_path=None,
+    min_font_size=10,
+    max_font_size=None,
+    stopwords=None,
+    relative_scaling=0.0,
+):
+    """Generate a word cloud (distributable-compatible API).
+
+    Returns:
+        Tuple of (WordCloud object, word_frequencies dict).
+        Returns (None, {}) if wordcloud is not available.
+    """
+    if WordCloud is None:
+        return None, {}
+
+    if stopwords is None:
+        stopwords = set(ENGLISH_STOP_WORDS)
+
+    stopwords_lower = {w.lower() for w in stopwords}
+    word_counts = {}
+    for text in texts:
+        for word in re.findall(r"\b[a-zA-Z0-9]+\b", str(text).lower()):
+            if word not in stopwords_lower and len(word) > 1:
+                word_counts[word] = word_counts.get(word, 0) + 1
+
+    if not word_counts:
+        return None, {}
+
+    is_multi_color = isinstance(colormap, list)
+    color_func = None
+    cmap = None
+
+    if is_multi_color:
+        color_func = _create_wc_color_func(colormap)
+    elif colormap:
+        # Use a contrast-aware sampler instead of WordCloud's full-range
+        # uniform sampling so low-frequency words don't disappear into the
+        # background.
+        color_func = _create_contrast_aware_gradient_color_func(colormap, background_color)
+
+    wc = WordCloud(
+        width=width,
+        height=height,
+        max_words=max_words,
+        colormap=cmap,
+        background_color=background_color,
+        mask=mask,
+        font_path=font_path,
+        min_font_size=min_font_size,
+        max_font_size=max_font_size,
+        stopwords=stopwords,
+        mode="RGBA" if background_color is None else "RGB",
+        prefer_horizontal=0.9,
+        relative_scaling=relative_scaling,
+    )
+
+    wc.generate_from_frequencies(word_counts)
+
+    if color_func:
+        wc.recolor(color_func=color_func)
+
+    word_frequencies = wc.words_
+    return wc, word_frequencies
+
+
+def wordcloud_to_image(wc):
+    """Convert WordCloud to PIL Image."""
+    if wc is None:
+        return None
+    try:
+        return wc.to_image()
+    except Exception:
+        return None
+
+
+def save_wordcloud(wc, path, dpi=300):
+    """Save word cloud to file (PNG, JPG, or SVG)."""
+    if wc is None:
+        return False
+    try:
+        if path.lower().endswith((".png", ".jpg", ".jpeg")):
+            img = wc.to_image()
+            img.save(path, dpi=(dpi, dpi))
+        elif path.lower().endswith(".svg"):
+            import matplotlib.pyplot as plt
+
+            fig, ax = plt.subplots(figsize=(19.2, 10.8))
+            ax.imshow(wc, interpolation="bilinear")
+            ax.axis("off")
+            fig.savefig(path, format="svg", bbox_inches="tight", pad_inches=0)
+            plt.close(fig)
+        else:
+            img = wc.to_image()
+            img.save(path, dpi=(dpi, dpi))
+        return True
+    except Exception:
+        return False
+
+
+def load_custom_mask(image_path):
+    """Load an image file and convert it to a word cloud mask array."""
+    try:
+        img = Image.open(image_path).convert("RGBA")
+        img.thumbnail((1920, 1080), Image.Resampling.LANCZOS)
+        canvas = Image.new("RGBA", (1920, 1080), (255, 255, 255, 255))
+        offset = ((1920 - img.width) // 2, (1080 - img.height) // 2)
+        canvas.paste(img, offset, img)
+        arr = np.array(canvas)
+        alpha = arr[:, :, 3]
+        mask = np.where(alpha > 128, 0, 255).astype(np.uint8)
+        if mask.min() == mask.max():
+            gray = np.array(canvas.convert("L"))
+            mask = np.where(gray < 200, 0, 255).astype(np.uint8)
+        if mask.min() == mask.max():
+            return None
+        return mask
+    except Exception:
+        return None
+
+
+def discover_system_fonts():
+    """Discover available TrueType fonts from the system Fonts directory."""
+    fonts = {"(Default)": None}
+    fonts_dir = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
+    if not os.path.isdir(fonts_dir):
+        return fonts
+    try:
+        for f in sorted(os.listdir(fonts_dir)):
+            if f.lower().endswith((".ttf", ".otf")):
+                name = os.path.splitext(f)[0]
+                for suffix in (
+                    "-Regular", "-Bold", "-Italic", "-BoldItalic",
+                    "Regular", "Bold", "Italic",
+                ):
+                    if name.endswith(suffix):
+                        name = name[: -len(suffix)].rstrip("-_ ")
+                        break
+                if name:
+                    full_path = os.path.join(fonts_dir, f)
+                    fonts[name] = full_path
+    except OSError:
+        pass
+    return fonts

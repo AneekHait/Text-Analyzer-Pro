@@ -142,6 +142,12 @@ class ClusterGuiCleaningTests(unittest.TestCase):
         self.gui.k_spin.setValue(2)
         with mock.patch("gui.show_error"), mock.patch("gui.show_warning"):
             self.gui.run_clustering()
+            # run_clustering is now async (runs on a QThread). Pump events
+            # until the worker finishes (signals are delivered on this thread).
+            from PySide6 import QtCore
+            deadline = QtCore.QDeadlineTimer(30000)
+            while self.gui.controller._cluster_thread is not None and not deadline.hasExpired():
+                self.qapp.processEvents(QtCore.QEventLoop.AllEvents, 50)
         self.assertIn("text_cleaned", self.gui.df.columns)
         self.assertEqual(self.gui.df["text_cleaned"].tolist(), ["alpha", "alpha", "", "beta"])
         self.assertEqual(len(self.gui.labels), 4)
