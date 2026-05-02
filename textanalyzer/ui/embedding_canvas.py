@@ -1,16 +1,20 @@
-"""Inline matplotlib canvas widget for cluster scatter plots."""
+"""Inline matplotlib canvas widget for cluster scatter plots.
+
+Matplotlib is the heaviest non-Qt dependency in this app (~500-700 ms cold
+start on Windows), and the canvas is only used after the user clicks
+*Visualize* on a clustered result. To keep the matplotlib load off the
+launch path, the Figure + FigureCanvas are created lazily on the first
+``render_embedding`` call instead of in ``__init__``. Existence of the
+matplotlib package is checked via ``importlib.util.find_spec`` — that
+returns the spec without actually executing the module.
+"""
+
+import importlib.util as _ilu
 
 import numpy as np
 from PySide6 import QtCore, QtWidgets
 
-try:
-    from matplotlib.figure import Figure
-    from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-    _HAS_MPL = True
-except Exception:  # pragma: no cover
-    Figure = None
-    FigureCanvas = None
-    _HAS_MPL = False
+_HAS_MPL = _ilu.find_spec("matplotlib") is not None
 
 
 class EmbeddingCanvas(QtWidgets.QWidget):
@@ -20,6 +24,7 @@ class EmbeddingCanvas(QtWidgets.QWidget):
         super().__init__(parent)
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        self._layout = layout
         self._canvas = None
         self._figure = None
         self._placeholder = QtWidgets.QLabel("Run clustering and click Visualize to see a 2D projection.")
@@ -27,15 +32,29 @@ class EmbeddingCanvas(QtWidgets.QWidget):
         self._placeholder.setProperty("role", "muted")
         self._placeholder.setMinimumHeight(220)
         layout.addWidget(self._placeholder)
+        # Matplotlib Figure + FigureCanvas created on first render
+        # (see _ensure_canvas) — keeps app startup off the matplotlib path.
 
-        if _HAS_MPL:
-            self._figure = Figure(figsize=(6, 4), tight_layout=True)
-            self._canvas = FigureCanvas(self._figure)
-            self._canvas.hide()
-            layout.addWidget(self._canvas, 1)
+    def _ensure_canvas(self) -> bool:
+        """Lazily create the matplotlib canvas. Returns True if it's now available."""
+        if self._canvas is not None:
+            return True
+        if not _HAS_MPL:
+            return False
+        try:
+            from matplotlib.figure import Figure
+            from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+        except Exception:
+            return False
+        self._figure = Figure(figsize=(6, 4), tight_layout=True)
+        self._canvas = FigureCanvas(self._figure)
+        self._canvas.hide()
+        self._layout.addWidget(self._canvas, 1)
+        return True
 
     def is_available(self) -> bool:
-        return _HAS_MPL and self._canvas is not None
+        """Whether matplotlib is installed (canvas can be created on demand)."""
+        return _HAS_MPL
 
     def clear(self):
         if self._figure is not None:
@@ -45,7 +64,7 @@ class EmbeddingCanvas(QtWidgets.QWidget):
         self._placeholder.show()
 
     def render_embedding(self, embedding_2d: np.ndarray, labels: np.ndarray, method: str, bg: str, fg: str, muted: str):
-        if not self.is_available():
+        if not self._ensure_canvas():
             return
         self._placeholder.hide()
         self._figure.clear()

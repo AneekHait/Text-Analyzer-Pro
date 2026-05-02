@@ -1,5 +1,6 @@
 """Icon and asset helpers (qtawesome wrappers + branded banner cache)."""
 
+from functools import lru_cache
 from pathlib import Path
 
 from PySide6 import QtCore, QtGui
@@ -15,8 +16,15 @@ except Exception:  # pragma: no cover
 ASSETS_DIR = Path(__file__).resolve().parents[2] / "assets"
 
 
+@lru_cache(maxsize=256)
 def _icon(name: str, color: str = None) -> QtGui.QIcon:
-    """Return a qtawesome icon, or an empty icon when qtawesome is unavailable."""
+    """Return a qtawesome icon, or an empty icon when qtawesome is unavailable.
+
+    Cached: ``ClusterGUI.__init__`` calls this 30+ times across menus,
+    sidebar, toolbar, and action bar — each ``qta.icon()`` rebuilds a
+    glyph from the FontAwesome font. Memoizing on ``(name, color)``
+    converts the repeats into dict lookups (QIcon is safe to share).
+    """
     if not _HAS_QTA:
         return QtGui.QIcon()
     try:

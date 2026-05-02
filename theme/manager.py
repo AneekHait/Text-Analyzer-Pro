@@ -5,6 +5,23 @@ from .qss import build_qss
 from .tokens import get_tokens
 
 
+_FONT_FAMILIES_CACHE: "frozenset[str] | None" = None
+
+
+def _system_font_families() -> "frozenset[str]":
+    """Return the system's installed font family names as a cached frozenset.
+
+    ``QFontDatabase().families()`` allocates a fresh list and on Windows
+    can take ~30-50 ms the first time it touches the registry. Cache the
+    result for the process lifetime — fonts don't appear/disappear at
+    runtime in any scenario this app cares about.
+    """
+    global _FONT_FAMILIES_CACHE
+    if _FONT_FAMILIES_CACHE is None:
+        _FONT_FAMILIES_CACHE = frozenset(QtGui.QFontDatabase().families())
+    return _FONT_FAMILIES_CACHE
+
+
 class ThemeManager(QtCore.QObject):
     """Singleton-like helper for applying and toggling app themes."""
 
@@ -51,14 +68,11 @@ class ThemeManager(QtCore.QObject):
             if name and name not in ("sans-serif", "system-ui", "monospace"):
                 candidates.append(name)
 
-        # Resolve the first installed family.
-        db = QtGui.QFontDatabase()
-        chosen = ""
-        for name in candidates:
-            families = db.families()
-            if name in families:
-                chosen = name
-                break
+        # Resolve the first installed family. Use the cached frozenset for
+        # O(1) lookup instead of a list scan inside the loop, and skip the
+        # QFontDatabase round-trip entirely on subsequent theme toggles.
+        families = _system_font_families()
+        chosen = next((n for n in candidates if n in families), "")
         if not chosen:
             chosen = candidates[0] if candidates else "Segoe UI"
 

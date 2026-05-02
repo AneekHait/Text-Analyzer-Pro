@@ -43,20 +43,44 @@ from textanalyzer.utils.icons import (
     _load_banner_pixmap,
     _spin_icon,
 )
-from textanalyzer.ui.about import AboutDialog
 from textanalyzer.ui.collapsible import CollapsibleSection
 from textanalyzer.ui.data_source_panel import DataSourcePanel
-from textanalyzer.ui.diagnostics_window import DiagnosticsWindow
 from textanalyzer.ui.embedding_canvas import EmbeddingCanvas, _HAS_MPL
-from textanalyzer.ui.settings_window import SettingsWindow
 from textanalyzer.ui.sidebar import SidebarButton as _SidebarButton
 from textanalyzer.ui.shell.dock_panels import InspectorDock, NavigatorDock
 from textanalyzer.ui.shell.workspace_tabs import WorkspaceTabWidget
 from textanalyzer.ui.toast import Toast, show_toast
-from textanalyzer.ui.wordcloud_window import WordCloudDialog
-WordCloudBuilderWindow = WordCloudDialog  # backward-compat alias
+# AboutDialog, DiagnosticsWindow, SettingsWindow, WordCloudDialog are
+# lazy-imported inside the methods that open them — keeps their (and their
+# transitive) imports off the app launch path. WordCloudDialog in
+# particular pulls in the wordcloud package + PIL ImageQt.
 from textanalyzer.workers.cluster import ClusterWorker
 from textanalyzer.workers.embedding import EmbeddingWorker
+
+
+def __getattr__(name):
+    """Lazy module-level attribute resolution (PEP 562).
+
+    Keeps the legacy ``from gui import WordCloudBuilderWindow`` /
+    ``WordCloudDialog`` imports working without forcing
+    ``textanalyzer.ui.wordcloud_window`` (and its transitive `wordcloud` +
+    `PIL.ImageQt` deps) into the app launch path. The dialog module is
+    imported on first attribute access — typically the test harness or an
+    external script.
+    """
+    if name in ("WordCloudDialog", "WordCloudBuilderWindow"):
+        from textanalyzer.ui.wordcloud_window import WordCloudDialog as _wcd
+        return _wcd
+    if name == "AboutDialog":
+        from textanalyzer.ui.about import AboutDialog as _ad
+        return _ad
+    if name == "SettingsWindow":
+        from textanalyzer.ui.settings_window import SettingsWindow as _sw
+        return _sw
+    if name == "DiagnosticsWindow":
+        from textanalyzer.ui.diagnostics_window import DiagnosticsWindow as _dw
+        return _dw
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 class ClusterGUI(QtWidgets.QMainWindow):
     PAGE_SETUP = 0
@@ -1135,11 +1159,13 @@ class ClusterGUI(QtWidgets.QMainWindow):
         self.log.clear()
 
     def show_imprint(self):
+        from textanalyzer.ui.about import AboutDialog
         dialog = AboutDialog(self.owner_name, self.owner_contact, self.owner_website, self.owner_bmc, self)
         dialog.exec()
 
     def show_settings_window(self):
         if self.settings_window is None:
+            from textanalyzer.ui.settings_window import SettingsWindow
             self.settings_window = SettingsWindow(self.settings, self)
             self.settings_window.settings_changed.connect(self._on_settings_changed)
         self.settings_window.show()
@@ -1148,6 +1174,7 @@ class ClusterGUI(QtWidgets.QMainWindow):
 
     def show_diagnostics_window(self):
         if self.diagnostics_window is None:
+            from textanalyzer.ui.diagnostics_window import DiagnosticsWindow
             self.diagnostics_window = DiagnosticsWindow(self)
             # Seed with existing in-page log content.
             existing = self.log.toPlainText().splitlines() if hasattr(self, "log") else []
@@ -1520,6 +1547,7 @@ class ClusterGUI(QtWidgets.QMainWindow):
         texts = coerce_text_column(self.df[col]).tolist()
         if self.wordcloud_builder is not None and self.wordcloud_builder.isVisible():
             self.wordcloud_builder.close()
+        from textanalyzer.ui.wordcloud_window import WordCloudDialog
         self.wordcloud_builder = WordCloudDialog(self, texts, col, dataframe=self.df)
         self.wordcloud_builder.showMaximized()
 
