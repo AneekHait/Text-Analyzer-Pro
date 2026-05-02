@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from collections import Counter
 from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -199,83 +200,65 @@ class WordCloudToolTests(unittest.TestCase):
         self.assertEqual(image.size, (280, 180))
 
 
-class FakeApp(QtWidgets.QWidget):
-    def __init__(self):
-        super().__init__()
-        self.app_title = "Test App"
-        self.df = pd.DataFrame({"text": ["alpha beta", "beta gamma"]})
-        self.current_file_path = os.path.join(os.getcwd(), "demo.xlsx")
-        self.wordcloud_builder = None
-
-    def current_column_name(self):
-        return "text"
-
-    def current_sheet_name(self):
-        return "Sheet1"
-
-    def log_msg(self, _message):
-        return None
-
-
-class WordCloudBuilderGuiTests(unittest.TestCase):
+class WordCloudDialogGuiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.qapp = get_qapp()
 
     def setUp(self):
-        self.app = FakeApp()
-        self.builder = WordCloudBuilderWindow(self.app)
+        self.parent = QtWidgets.QWidget()
+        self.texts = ["alpha beta alpha", "beta gamma delta"]
+        # Avoid mock.patch.object — PySide6 signal system can segfault with MagicMock slots.
+        orig = WordCloudBuilderWindow._generate_preview
+        WordCloudBuilderWindow._generate_preview = lambda self: None
+        try:
+            self.dialog = WordCloudBuilderWindow(self.parent, self.texts, "text")
+        finally:
+            WordCloudBuilderWindow._generate_preview = orig
 
     def tearDown(self):
-        self.builder.close()
-        self.app.close()
+        self.dialog.close()
+        self.parent.close()
 
-    def test_visual_control_state_switches(self):
-        self.builder.color_mode_combo.setCurrentText("Custom")
-        self.builder.mask_mode_combo.setCurrentText("Custom PNG")
-        self.builder._update_visual_control_states()
-        self.assertTrue(self.builder.custom_colors_edit.isEnabled())
-        self.assertTrue(self.builder.mask_path_edit.isEnabled())
-        self.assertFalse(self.builder.palette_combo.isEnabled())
+    def test_shape_combo_has_custom_image_option(self):
+        items = [self.dialog.shape_combo.itemText(i)
+                 for i in range(self.dialog.shape_combo.count())]
+        self.assertIn("Custom Image\u2026", items)
+        self.assertIn("Heart", items)
+        self.assertIn("Circle", items)
 
-    def test_reset_to_default_restores_visual_defaults(self):
-        self.builder.color_mode_combo.setCurrentText("Custom")
-        self.builder.custom_colors_edit.setText("#123456")
-        self.builder.mask_mode_combo.setCurrentText("Builtin Shape")
-        self.builder.shape_combo.setCurrentText("Heart")
-        self.builder.reset_to_default_preset()
-        self.assertEqual(self.builder.color_mode_combo.currentText(), "Colormap")
-        self.assertEqual(self.builder.mask_mode_combo.currentText(), "None")
-        self.assertEqual(self.builder.font_label.text(), "Default font")
+    def test_rel_scale_slider_updates_label(self):
+        self.dialog.rel_scale_slider.setValue(0)
+        self.assertIn("rank only", self.dialog.rel_scale_label.text())
+        self.dialog.rel_scale_slider.setValue(100)
+        self.assertIn("fully proportional", self.dialog.rel_scale_label.text())
 
-    def test_live_preview_is_scheduled_on_setting_change(self):
-        with mock.patch.object(self.builder, "schedule_live_preview") as schedule_preview:
-            self.builder._on_live_setting_changed()
-        schedule_preview.assert_called()
+    def test_stopwords_display_updates(self):
+        self.dialog.custom_stopwords = {"hello", "world"}
+        self.dialog._update_stopwords_display()
+        self.assertIn("2", self.dialog.stopwords_count_label.text())
 
-    def test_template_selection_updates_form(self):
-        self.builder.template_apply_combo.setCurrentText("High Contrast")
-        self.builder.apply_selected_template()
-        self.assertEqual(self.builder.active_template_label.text(), "High Contrast")
-        self.assertEqual(self.builder.color_mode_combo.currentText(), "Palette")
-        self.assertEqual(self.builder.mask_mode_combo.currentText(), "Builtin Shape")
+    def test_word_filter_clears_tree(self):
+        self.dialog.actual_word_counts = Counter({"alpha": 5, "beta": 3})
+        self.dialog.total_word_count = 8
+        self.dialog._update_word_counts()
+        self.assertGreater(self.dialog.word_tree.topLevelItemCount(), 0)
+        self.dialog.word_filter_edit.setText("zzz")
+        self.dialog._on_word_filter_change()
+        self.assertEqual(self.dialog.word_tree.topLevelItemCount(), 0)
 
-    def test_font_selection_updates_font_path_and_label(self):
-        if len(self.builder.FONT_OPTIONS) < 2:
-            self.skipTest("No system fonts discovered in this environment")
-        label, path = self.builder.FONT_OPTIONS[1]
-        self.builder.font_choice_combo.setCurrentText(label)
-        self.builder.apply_selected_font()
-        self.assertEqual(self.builder.font_label.text(), label)
-        self.assertEqual(getattr(self.builder, "_custom_font_path", ""), path)
+    def test_color_combo_contains_distributable_schemes(self):
+        items = [self.dialog.color_combo.itemText(i)
+                 for i in range(self.dialog.color_combo.count())]
+        self.assertIn("Corporate Blue", items)
+        self.assertIn("Rainbow Mix", items)
 
-    def test_stale_render_result_is_ignored(self):
-        stats_df = pd.DataFrame([{"term": "alpha", "count": 2, "share": 1.0}])
-        image = Image.new("RGB", (100, 80), "white")
-        self.builder._latest_request_id = 2
-        self.builder.is_rendering = True
-        self.builder._finish_render(1, "text", stats_df, {"total_rows": 2, "usable_rows": 1, "unique_terms": 1, "kept_term_occurrences": 2}, image)
-        self.assertIsNone(self.builder.current_image)
+    def test_background_combo_contains_all_options(self):
+        items = [self.dialog.bg_combo.itemText(i)
+                 for i in range(self.dialog.bg_combo.count())]
+        self.assertIn("White", items)
+        self.assertIn("Black", items)
+        self.assertIn("Transparent", items)
 
 
 if __name__ == "__main__":
