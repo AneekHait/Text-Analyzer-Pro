@@ -2,7 +2,7 @@
 
 from PySide6 import QtCore
 
-from cluster_tool import (
+from textanalyzer.engine.cluster import (
     assign_cluster_names,
     cluster_texts,
     get_top_keywords_per_cluster,

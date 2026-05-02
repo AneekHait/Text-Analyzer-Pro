@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from PySide6 import QtCore
 
-from wordcloud_tool import prepare_wordcloud_data, render_wordcloud
+from textanalyzer.engine.wordcloud import prepare_wordcloud_data, render_wordcloud
 
 
 class WordCloudWorker(QtCore.QObject):

@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import cluster_tool as ct
+import textanalyzer.engine.cluster as ct
 
 
 @pytest.fixture

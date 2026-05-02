@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from PySide6 import QtCore
 
-from cluster_tool import prepare_text_cleaning, TextCleaningConfig
+from textanalyzer.engine.cluster import prepare_text_cleaning, TextCleaningConfig
 
 
 class CleaningPreviewWorker(QtCore.QObject):

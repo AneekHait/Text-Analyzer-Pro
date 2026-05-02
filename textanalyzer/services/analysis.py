@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 
-from cluster_tool import TextCleaningResult, coerce_text_column, prepare_text_cleaning
+from textanalyzer.engine.cluster import TextCleaningResult, coerce_text_column, prepare_text_cleaning
 
 from ..models.config import CleaningConfigModel
 from ..models.result import ClusterResultModel

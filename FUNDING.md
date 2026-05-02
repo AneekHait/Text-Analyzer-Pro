@@ -1,6 +1,6 @@
-# Fund Feature Requests & v2.0 — Text Analyzer Pro
+# Fund Feature Requests — Text Analyzer Pro
 
-Thank you for considering support. Contributions fund prioritized feature development, maintenance, hosting, and UX improvements for Text Analyzer Pro (v1.5) and the upcoming v2.0.
+Thank you for considering support. Contributions fund prioritized feature development, maintenance, hosting, and UX improvements for Text Analyzer Pro (v2.0) and beyond.
 
 ## Why fund?
 - Accelerate delivery of requested features (visualizations, batch processing, CLI improvements).

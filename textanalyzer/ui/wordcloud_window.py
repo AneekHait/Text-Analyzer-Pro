@@ -11,12 +11,13 @@ import os
 import re
 from collections import Counter
 
+import pandas as pd
 from PIL import Image
 from PIL.ImageQt import ImageQt
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from cluster_tool import coerce_text_column
-from wordcloud_tool import (
+from textanalyzer.engine.cluster import coerce_text_column
+from textanalyzer.engine.wordcloud import (
     WORDCLOUD_BACKGROUNDS,
     WORDCLOUD_COLOR_SCHEMES,
     WORDCLOUD_SHAPES,
@@ -428,8 +429,6 @@ class WordCloudDialog(QtWidgets.QDialog):
             return
         # Prefer string/object columns, but fall back to all columns so users
         # can still pick a numeric column if they want.
-        import pandas as pd
-
         cols = list(self.dataframe.columns)
         text_cols = [c for c in cols if pd.api.types.is_string_dtype(self.dataframe[c])]
         ordered = text_cols + [c for c in cols if c not in text_cols]

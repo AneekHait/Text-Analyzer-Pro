@@ -2,7 +2,7 @@
 
 from PySide6 import QtCore
 
-from cluster_tool import compute_embedding_2d
+from textanalyzer.engine.cluster import compute_embedding_2d
 
 
 class EmbeddingWorker(QtCore.QObject):

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 
-from cluster_tool import TextCleaningConfig
+from textanalyzer.engine.cluster import TextCleaningConfig
 
 
 @dataclass

@@ -13,7 +13,7 @@ from typing import Optional
 import numpy as np
 from PySide6 import QtCore, QtWidgets
 
-import app_settings
+from textanalyzer import settings as app_settings
 from textanalyzer.models.config import CleaningConfigModel
 from textanalyzer.models.result import ClusterResultModel
 from textanalyzer.models.session import AnalysisSession
@@ -81,7 +81,7 @@ class AnalysisController(QtCore.QObject):
             return
         try:
             ext = IOService.file_extension(self.session.file_path)
-            from cluster_tool import EXCEL_INPUT_EXTENSIONS
+            from textanalyzer.engine.cluster import EXCEL_INPUT_EXTENSIONS
             selected = sheet_name if ext in EXCEL_INPUT_EXTENSIONS else None
             self.session.df = IOService.load_table(self.session.file_path, sheet_name=selected)
             self.session.sheet_name = sheet_name

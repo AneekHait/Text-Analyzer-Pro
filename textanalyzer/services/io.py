@@ -8,7 +8,7 @@ from typing import List, Optional
 import joblib
 import pandas as pd
 
-from cluster_tool import get_file_extension, get_sheet_names, load_table, save_results
+from textanalyzer.engine.cluster import get_file_extension, get_sheet_names, load_table, save_results
 
 
 class IOService:

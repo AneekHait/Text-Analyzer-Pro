@@ -66,7 +66,7 @@ class ClusterGUI(QtWidgets.QMainWindow):
     def __init__(self, theme_manager: "ThemeManager" = None):
         super().__init__()
         self.app_title = "Text Analyzer Pro"
-        self.app_version = "v1.5"
+        self.app_version = "v2.0"
         self.owner_name = "Aneek Hait"
         self.owner_contact = "https://www.linkedin.com/in/aneekhait/"
         self.owner_website = "https://aneekhait.github.io"
@@ -595,7 +595,17 @@ class ClusterGUI(QtWidgets.QMainWindow):
         # #1 footgun on TF-IDF (cosine distances vary wildly per corpus).
         # If hdbscan is selected without the package installed, cluster_texts
         # raises ImportError with a clear install hint.
-        self.alg_combo.addItems(["kmeans", "hdbscan", "agglomerative", "dbscan"])
+        # Display label vs engine value: "kmeans++" surfaces the init algorithm
+        # actually in use; the engine still receives the bare "kmeans" string.
+        # Use currentData() / self.current_algorithm() for the engine value;
+        # currentText() for display purposes (status bar, persisted setting).
+        for display, engine in (
+            ("kmeans++", "kmeans"),
+            ("hdbscan", "hdbscan"),
+            ("agglomerative", "agglomerative"),
+            ("dbscan", "dbscan"),
+        ):
+            self.alg_combo.addItem(display, userData=engine)
         self.alg_combo.setItemData(
             3,
             "DBSCAN requires manually tuning `eps`, which is brittle on TF-IDF "
@@ -604,8 +614,7 @@ class ClusterGUI(QtWidgets.QMainWindow):
             QtCore.Qt.ItemDataRole.ToolTipRole,
         )
         last_alg = self.settings.get("last_algorithm", "kmeans")
-        if last_alg in ("kmeans", "dbscan", "agglomerative"):
-            self.alg_combo.setCurrentText(last_alg)
+        self._set_algorithm(last_alg)
         self.alg_combo.currentTextChanged.connect(self._on_alg_change)
         self.alg_combo.currentTextChanged.connect(lambda *_: self._update_status_bar())
         self.k_spin = QtWidgets.QSpinBox()
@@ -942,8 +951,34 @@ class ClusterGUI(QtWidgets.QMainWindow):
     # Cleaning recipe & config helpers                                   #
     # ------------------------------------------------------------------ #
 
+    def current_algorithm(self) -> str:
+        """Engine-side algorithm name for the current dropdown selection.
+
+        Display labels (e.g. ``kmeans++``) and engine values (e.g. ``kmeans``)
+        differ; the engine name is stored as Qt itemData and read via
+        currentData(). Falls back to currentText() for older builds where
+        items were added without itemData.
+        """
+        data = self.alg_combo.currentData()
+        return str(data) if data is not None else self.alg_combo.currentText()
+
+    def _set_algorithm(self, engine_value: str) -> None:
+        """Select the dropdown item whose engine name (itemData) matches.
+
+        Used both for restoring the last-used algorithm at startup and for
+        the Compare Algorithms dialog's "Use {best}" button.
+        """
+        for i in range(self.alg_combo.count()):
+            if self.alg_combo.itemData(i) == engine_value:
+                self.alg_combo.setCurrentIndex(i)
+                return
+        # Fall back to text match for forward-compat / unknown values.
+        idx = self.alg_combo.findText(engine_value)
+        if idx >= 0:
+            self.alg_combo.setCurrentIndex(idx)
+
     def _on_alg_change(self, *_args):
-        self.k_spin.setEnabled(self.alg_combo.currentText() != "dbscan")
+        self.k_spin.setEnabled(self.current_algorithm() != "dbscan")
 
     def _build_cleaning_config(self):
         return TextCleaningConfig(
@@ -1286,7 +1321,7 @@ class ClusterGUI(QtWidgets.QMainWindow):
             return
         try:
             n_clusters = int(self.k_spin.value())
-            if self.alg_combo.currentText() != "dbscan" and n_clusters < 2:
+            if self.current_algorithm() != "dbscan" and n_clusters < 2:
                 show_warning(self, "Invalid parameter", "n_clusters must be at least 2")
                 return
             top_n = int(self.name_top_spin.value())
@@ -1315,7 +1350,7 @@ class ClusterGUI(QtWidgets.QMainWindow):
         self.controller.run_clustering(
             column=col,
             config=config,
-            algorithm=self.alg_combo.currentText(),
+            algorithm=self.current_algorithm(),
             n_clusters=n_clusters,
             top_n=top_n,
             joiner=self.joiner_edit.text(),
@@ -1374,7 +1409,7 @@ class ClusterGUI(QtWidgets.QMainWindow):
             self.save_model_btn.setEnabled(True)
             n_input = len(self.controller.session.cleaning_result.cluster_input_texts) if self.controller.session.cleaning_result else 0
             show_toast(self, f"Clustered {n_input} rows into {model.n_clusters} clusters", level="success")
-            self.settings["last_algorithm"] = self.alg_combo.currentText()
+            self.settings["last_algorithm"] = self.current_algorithm()
             app_settings.save(self.settings)
         finally:
             self._set_running_state(False)
@@ -1845,7 +1880,7 @@ class ClusterGUI(QtWidgets.QMainWindow):
         if best:
             apply_btn = QtWidgets.QPushButton(f"Use {best}")
             apply_btn.setProperty("primary", "true")
-            apply_btn.clicked.connect(lambda: (self.alg_combo.setCurrentText(best), dlg.accept()))
+            apply_btn.clicked.connect(lambda: (self._set_algorithm(best), dlg.accept()))
             buttons.addButton(apply_btn, QtWidgets.QDialogButtonBox.AcceptRole)
         buttons.rejected.connect(dlg.reject)
         layout.addWidget(buttons)
@@ -1902,7 +1937,7 @@ class ClusterGUI(QtWidgets.QMainWindow):
             if self.wordcloud_builder is not None:
                 self.settings["geometry_wordcloud"] = bytes(self.wordcloud_builder.saveGeometry().toBase64()).decode("ascii")
             self.settings["last_column"] = self.current_column_name()
-            self.settings["last_algorithm"] = self.alg_combo.currentText()
+            self.settings["last_algorithm"] = self.current_algorithm()
             app_settings.save(self.settings)
         except Exception:
             pass
@@ -1926,7 +1961,7 @@ def main():
 
     # ── Application identity (used by QSettings, macOS About menu, etc.) ──
     app.setApplicationName("Text Analyzer Pro")
-    app.setApplicationVersion("1.5")
+    app.setApplicationVersion("2.0")
     app.setOrganizationName("Aneek Hait")
     app.setOrganizationDomain("aneekhait.dev")
 

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
-import app_settings
+from textanalyzer import settings as app_settings
 
 
 class SettingsWindow(QtWidgets.QDialog):
