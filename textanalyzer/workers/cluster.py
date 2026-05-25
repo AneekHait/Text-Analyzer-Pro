@@ -61,7 +61,11 @@ class ClusterWorker(QtCore.QObject):
                     f"n_clusters ({self.n_clusters}) cannot exceed the cleaned clustering row count ({kept})."
                 )
 
-            self.progress.emit(35, "Vectorizing…")
+            vec_kind = self.vectorize_kwargs.get("vectorizer_kind", "tfidf")
+            if vec_kind == "embedding":
+                self.progress.emit(35, "Generating embeddings… (first run may download a model)")
+            else:
+                self.progress.emit(35, "Vectorizing…")
             vectorizer, X = vectorize_texts(
                 cleaning_result.cluster_input_texts, **self.vectorize_kwargs
             )

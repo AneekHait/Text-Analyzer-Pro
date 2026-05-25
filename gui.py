@@ -125,7 +125,21 @@ class ClusterGUI(QtWidgets.QMainWindow):
             "use_hashing": False,
             "max_features": 2000,
         }
+        # Sentence-embedding settings (only consulted when the vectorizer combo
+        # is set to "embeddings"). Defaults match `vectorize_texts` so the
+        # combo can flip without an extra dialog visit.
+        self._embedding_settings = {
+            "model": "sentence-transformers/all-MiniLM-L6-v2",
+            "device": "cpu",
+            "batch_size": 32,
+        }
+        self._embedding_first_run_announced = False
         self._embedding_worker = None
+        # Categorization state — populated by _on_ctrl_categorization_finished;
+        # last_run_was_categorization toggles the save path to emit the pivot
+        # sheet and use Subcategory rather than cluster_name.
+        self.taxonomy_result = None
+        self.last_run_was_categorization = False
 
         self.theme_manager = theme_manager
         self.settings = app_settings.load()
@@ -166,6 +180,17 @@ class ClusterGUI(QtWidgets.QMainWindow):
             lambda p: show_toast(self, f"Saved to {os.path.basename(p)}", level="success"))
         c.model_saved.connect(
             lambda p: show_toast(self, f"Model saved: {os.path.basename(p)}", level="success"))
+        c.categorization_started.connect(lambda: self._set_running_state(True))
+        c.categorization_progress.connect(self._on_cluster_progress)
+        c.categorization_finished.connect(self._on_ctrl_categorization_finished)
+        c.categorization_failed.connect(self._on_ctrl_categorization_failed)
+        c.categorization_cancelled.connect(
+            lambda: (show_toast(self, "Categorization cancelled", level="warning"),
+                     self._set_running_state(False)))
+        c.taxonomy_saved.connect(
+            lambda p: show_toast(self, f"Taxonomy saved: {os.path.basename(p)}", level="success"))
+        c.taxonomy_loaded.connect(
+            lambda p: show_toast(self, f"Taxonomy loaded: {os.path.basename(p)}", level="info"))
 
     # ------------------------------------------------------------------ #
     # Shell construction                                                 #
@@ -265,6 +290,15 @@ class ClusterGUI(QtWidgets.QMainWindow):
         load_model_action = QtGui.QAction(_icon("fa5s.upload"), "&Load Model…", self)
         load_model_action.triggered.connect(self.load_model_apply)
         file_menu.addAction(load_model_action)
+
+        self.save_taxonomy_action = QtGui.QAction(_icon("fa5s.sitemap"), "Save &Taxonomy…", self)
+        self.save_taxonomy_action.setEnabled(False)
+        self.save_taxonomy_action.triggered.connect(self.save_taxonomy)
+        file_menu.addAction(self.save_taxonomy_action)
+
+        self.load_taxonomy_action = QtGui.QAction("Lo&ad Taxonomy…", self)
+        self.load_taxonomy_action.triggered.connect(self.load_taxonomy_apply)
+        file_menu.addAction(self.load_taxonomy_action)
 
         file_menu.addSeparator()
         quit_action = QtGui.QAction("E&xit", self)
@@ -480,6 +514,15 @@ class ClusterGUI(QtWidgets.QMainWindow):
         self.save_btn.clicked.connect(self.save_with_names)
         layout.addWidget(self.save_btn)
 
+        self.categorize_btn = QtWidgets.QPushButton("Run Categorization")
+        self.categorize_btn.setIcon(_icon("fa5s.sitemap"))
+        self.categorize_btn.setToolTip(
+            "Discover a single-level taxonomy: Subcategory + Non-Repetitive "
+            "+ Confidence. Uses HDBSCAN + deterministic keyword phrasing."
+        )
+        self.categorize_btn.clicked.connect(self.open_categorization_dialog)
+        layout.addWidget(self.categorize_btn)
+
         self.run_btn = QtWidgets.QPushButton("Run Clustering")
         self.run_btn.setIcon(_icon("fa5s.play", color="#ffffff"))
         self.run_btn.setProperty("primary", "true")
@@ -694,20 +737,78 @@ class ClusterGUI(QtWidgets.QMainWindow):
         self.compare_algos_btn.clicked.connect(self.compare_algorithms_dialog)
         alg_field_layout.addWidget(self.compare_algos_btn)
 
+        # Vectorizer row: TF-IDF (lexical) vs sentence-transformer embeddings
+        # (semantic). Stored engine value lives in itemData (currentData()).
+        from textanalyzer.engine.cluster import _ST_AVAILABLE as _ST_OK
+        self.vec_combo = QtWidgets.QComboBox()
+        self.vec_combo.addItem("TF-IDF (lexical)", userData="tfidf")
+        self.vec_combo.addItem("Embeddings (semantic)", userData="embedding")
+        if not _ST_OK:
+            # Disable the embedding row in-place so users see *why* it's unavailable.
+            model = self.vec_combo.model()
+            item = model.item(1) if hasattr(model, "item") else None
+            if item is not None:
+                item.setEnabled(False)
+            self.vec_combo.setItemData(
+                1,
+                "Requires `pip install sentence-transformers`. ~80MB model "
+                "downloaded on first run.",
+                QtCore.Qt.ItemDataRole.ToolTipRole,
+            )
+        else:
+            self.vec_combo.setItemData(
+                1,
+                "Sentence embeddings (~80MB model downloaded on first run). "
+                "Better for semantic / paraphrase clustering.",
+                QtCore.Qt.ItemDataRole.ToolTipRole,
+            )
+        # Restore last-used vectorizer kind from settings.
+        last_vec = self.settings.get("last_vectorizer_kind", "tfidf")
+        if last_vec == "embedding" and _ST_OK:
+            self.vec_combo.setCurrentIndex(1)
+        # Pull saved embedding defaults into the per-session settings dict.
+        if "embedding_model" in self.settings:
+            self._embedding_settings["model"] = self.settings["embedding_model"]
+        if "embedding_device" in self.settings:
+            self._embedding_settings["device"] = self.settings["embedding_device"]
+        if "embedding_batch_size" in self.settings:
+            try:
+                self._embedding_settings["batch_size"] = int(self.settings["embedding_batch_size"])
+            except (TypeError, ValueError):
+                pass
+
+        vec_field = QtWidgets.QWidget()
+        vec_field_layout = QtWidgets.QHBoxLayout(vec_field)
+        vec_field_layout.setContentsMargins(0, 0, 0, 0)
+        vec_field_layout.setSpacing(6)
+        vec_field_layout.addWidget(self.vec_combo, 1)
+        self.advanced_embed_btn = QtWidgets.QPushButton("Embeddings…")
+        self.advanced_embed_btn.setToolTip("Model / device / batch size for sentence embeddings")
+        self.advanced_embed_btn.setProperty("flat", "true")
+        self.advanced_embed_btn.clicked.connect(self.open_advanced_embedding)
+        vec_field_layout.addWidget(self.advanced_embed_btn)
+
+        self.vec_combo.currentIndexChanged.connect(self._on_vec_change)
+        # Apply initial enabled state for the advanced-* buttons (the
+        # signal-connected callback doesn't fire for the default value).
+        self.advanced_embed_btn.setEnabled(self.current_vectorizer_kind() == "embedding")
+        self.advanced_tfidf_btn.setEnabled(self.current_vectorizer_kind() == "tfidf")
+
         widgets = [
             ("Text column:", self.col_combo),
+            ("Vectorizer:", vec_field),
             ("Algorithm:", alg_field),
             ("n_clusters:", k_field),
             ("name top N:", self.name_top_spin),
             ("joiner:", self.joiner_edit),
             ("Visualization:", self.vis_combo),
         ]
-        positions = [(0, 0), (0, 2), (1, 0), (1, 2), (2, 0), (2, 2)]
+        positions = [(0, 0), (0, 2), (1, 0), (1, 2), (2, 0), (2, 2), (3, 0)]
         for (label, widget), (row, col) in zip(widgets, positions):
             params_layout.addWidget(QtWidgets.QLabel(label), row, col)
             params_layout.addWidget(widget, row, col + 1)
-        params_layout.addWidget(QtWidgets.QLabel("Output file:"), 3, 0)
-        params_layout.addWidget(self.out_edit, 3, 1, 1, 3)
+        params_layout.addWidget(QtWidgets.QLabel("Output file:"), 4, 0)
+        params_layout.addWidget(self.out_edit, 4, 1, 1, 3)
         params_layout.setColumnStretch(1, 1)
         params_layout.setColumnStretch(3, 1)
         layout.addWidget(params_group)
@@ -1003,6 +1104,62 @@ class ClusterGUI(QtWidgets.QMainWindow):
 
     def _on_alg_change(self, *_args):
         self.k_spin.setEnabled(self.current_algorithm() != "dbscan")
+
+    def current_vectorizer_kind(self) -> str:
+        """Engine-side vectorizer kind: ``"tfidf"`` or ``"embedding"``."""
+        if not hasattr(self, "vec_combo"):
+            return "tfidf"
+        data = self.vec_combo.currentData()
+        return str(data) if data is not None else "tfidf"
+
+    def _on_vec_change(self, *_args):
+        kind = self.current_vectorizer_kind()
+        # Surface the "Embeddings…" button only when meaningful, and gently
+        # nudge users the first time they pick embeddings so they're not
+        # surprised by the model download.
+        self.advanced_embed_btn.setEnabled(kind == "embedding")
+        self.advanced_tfidf_btn.setEnabled(kind == "tfidf")
+        if kind == "embedding" and not self._embedding_first_run_announced:
+            try:
+                from textanalyzer.engine.cluster import _ST_AVAILABLE as _ST_OK
+            except Exception:
+                _ST_OK = False
+            if _ST_OK:
+                show_toast(
+                    self,
+                    "Embeddings selected. First run will download ~80MB model.",
+                    level="info",
+                )
+                self._embedding_first_run_announced = True
+        # Persist immediately so the next session opens in the same mode.
+        self.settings["last_vectorizer_kind"] = kind
+        try:
+            app_settings.save(self.settings)
+        except Exception:
+            pass
+
+    def _build_vectorize_kwargs(self) -> dict:
+        """Render the active vectorizer's kwargs for ``vectorize_texts``.
+
+        Centralizes the TF-IDF / embedding branching so every call site
+        (run_clustering, Suggest K, Compare) sees the same wiring.
+        """
+        kind = self.current_vectorizer_kind()
+        if kind == "embedding":
+            return {
+                "vectorizer_kind": "embedding",
+                "embedding_model": self._embedding_settings["model"],
+                "embedding_device": self._embedding_settings["device"],
+                "embedding_batch_size": int(self._embedding_settings["batch_size"]),
+            }
+        return {
+            "vectorizer_kind": "tfidf",
+            "max_features": self._tfidf_settings["max_features"],
+            "min_df": self._tfidf_settings["min_df"],
+            "max_df": self._tfidf_settings["max_df"],
+            "ngram_range": self._tfidf_settings["ngram_range"],
+            "use_hashing": self._tfidf_settings["use_hashing"],
+        }
 
     def _build_cleaning_config(self):
         return TextCleaningConfig(
@@ -1381,20 +1538,19 @@ class ClusterGUI(QtWidgets.QMainWindow):
             n_clusters=n_clusters,
             top_n=top_n,
             joiner=self.joiner_edit.text(),
-            vectorize_kwargs={
-                "max_features": self._tfidf_settings["max_features"],
-                "min_df": self._tfidf_settings["min_df"],
-                "max_df": self._tfidf_settings["max_df"],
-                "ngram_range": self._tfidf_settings["ngram_range"],
-                "use_hashing": self._tfidf_settings["use_hashing"],
-            },
+            vectorize_kwargs=self._build_vectorize_kwargs(),
         )
 
     def cancel_clustering(self):
+        # Single Cancel button covers both pipelines \u2014 route based on which
+        # worker is active right now.
         self.controller.cancel_clustering()
+        self.controller.cancel_categorization()
 
     def _set_running_state(self, running: bool):
         self.run_btn.setEnabled(not running)
+        if hasattr(self, "categorize_btn"):
+            self.categorize_btn.setEnabled(not running)
         self.cancel_btn.setVisible(running)
         self.progress.setVisible(running)
         self.progress_label.setVisible(running)
@@ -1413,6 +1569,12 @@ class ClusterGUI(QtWidgets.QMainWindow):
     def _on_ctrl_cluster_finished(self, model) -> None:
         """Update view from :class:`ClusterResultModel` produced by controller."""
         try:
+            # Reset categorization mode so save_with_names emits the legacy
+            # cluster_name column (not Subcategory + pivot sheet).
+            self.last_run_was_categorization = False
+            self.taxonomy_result = None
+            if hasattr(self, "save_taxonomy_action"):
+                self.save_taxonomy_action.setEnabled(False)
             self.latest_cleaning_result = self.controller.session.cleaning_result
             # Keep legacy instance vars in sync for backwards compat.
             self.X = model.X
@@ -1495,6 +1657,58 @@ class ClusterGUI(QtWidgets.QMainWindow):
             kw_row.addStretch(1)
             layout.addLayout(kw_row)
 
+        # Categorization-only enrichments: drill-down samples + merge/split.
+        if getattr(self, "last_run_was_categorization", False) and self.taxonomy_result is not None:
+            tr = self.taxonomy_result
+            avg_conf = tr.avg_confidence_by_cluster.get(int(cid))
+            if avg_conf is not None:
+                conf_label = QtWidgets.QLabel(f"avg confidence: {avg_conf:.2f}")
+                conf_label.setProperty("role", "muted")
+                header.addWidget(conf_label)
+
+            samples = tr.samples_by_cluster.get(int(cid), [])
+            if samples:
+                # Collapsible drill-down: button toggles a sample-tickets panel.
+                toggle = QtWidgets.QToolButton()
+                toggle.setText(f"Show {min(len(samples), 5)} sample tickets")
+                toggle.setCheckable(True)
+                toggle.setArrowType(QtCore.Qt.RightArrow)
+                toggle.setStyleSheet("QToolButton { border: none; padding-left: 0px; }")
+                samples_widget = QtWidgets.QWidget()
+                sv = QtWidgets.QVBoxLayout(samples_widget)
+                sv.setContentsMargins(20, 4, 8, 4)
+                sv.setSpacing(2)
+                for s in samples[:5]:
+                    line = QtWidgets.QLabel(str(s)[:200])
+                    line.setWordWrap(True)
+                    line.setProperty("role", "muted")
+                    sv.addWidget(line)
+                samples_widget.setVisible(False)
+
+                def _toggle(checked, w=samples_widget, t=toggle):
+                    w.setVisible(checked)
+                    t.setArrowType(QtCore.Qt.DownArrow if checked else QtCore.Qt.RightArrow)
+                    t.setText("Hide sample tickets" if checked else f"Show {min(len(samples), 5)} sample tickets")
+
+                toggle.toggled.connect(_toggle)
+                layout.addWidget(toggle)
+                layout.addWidget(samples_widget)
+
+            action_row = QtWidgets.QHBoxLayout()
+            action_row.setSpacing(6)
+            action_row.addStretch(1)
+            merge_btn = QtWidgets.QPushButton("Merge into…")
+            merge_btn.setToolTip("Combine this cluster with another into one subcategory")
+            merge_btn.setProperty("flat", "true")
+            merge_btn.clicked.connect(lambda _=False, c=cid: self._on_merge_cluster_clicked(int(c)))
+            action_row.addWidget(merge_btn)
+            split_btn = QtWidgets.QPushButton("Split…")
+            split_btn.setToolTip("Split this cluster into 2 (or more) sub-clusters")
+            split_btn.setProperty("flat", "true")
+            split_btn.clicked.connect(lambda _=False, c=cid: self._on_split_cluster_clicked(int(c)))
+            action_row.addWidget(split_btn)
+            layout.addLayout(action_row)
+
         self.name_entries[cid] = entry
         return card
 
@@ -1551,6 +1765,336 @@ class ClusterGUI(QtWidgets.QMainWindow):
         self.wordcloud_builder = WordCloudDialog(self, texts, col, dataframe=self.df)
         self.wordcloud_builder.showMaximized()
 
+    # ------------------------------------------------------------------ #
+    # Categorization                                                     #
+    # ------------------------------------------------------------------ #
+
+    def open_categorization_dialog(self, *, taxonomy_payload: dict | None = None) -> None:
+        """Modal hosting the Granularity slider + advanced HDBSCAN knobs.
+
+        When ``taxonomy_payload`` is provided, skips the slider entirely and
+        kicks off ``apply_taxonomy`` against the loaded dataframe.
+        """
+        if self.df is None:
+            show_warning(self, "No data", "Open a file first, then run categorization.")
+            return
+        col = self.current_column_name()
+        if not col or col not in self.df.columns:
+            show_warning(self, "No column", "Select a text column on the Setup tab first.")
+            return
+
+        config = self._build_cleaning_config()
+
+        if taxonomy_payload is not None:
+            # Fast path — no dialog, just confirm + apply.
+            threshold = float(self.settings.get("taxonomy_confidence_threshold", 0.45))
+            self.controller.run_categorization(
+                column=col, config=config,
+                taxonomy_payload=taxonomy_payload,
+                confidence_threshold=threshold,
+            )
+            return
+
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("Run Categorization")
+        dlg.setModal(True)
+        layout = QtWidgets.QVBoxLayout(dlg)
+        layout.setSpacing(10)
+
+        form = QtWidgets.QFormLayout()
+        form.setHorizontalSpacing(10)
+        form.setVerticalSpacing(10)
+
+        last_granularity = int(self.settings.get("last_granularity", 50) or 50)
+        slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        slider.setRange(0, 100)
+        slider.setValue(last_granularity)
+        slider.setToolTip("Coarse (left) → Fine (right). Drives HDBSCAN min_cluster_size.")
+        live_label = QtWidgets.QLabel()
+        live_label.setProperty("role", "muted")
+
+        vec_combo = QtWidgets.QComboBox()
+        vec_combo.addItem("Embeddings (semantic)", userData="embedding")
+        vec_combo.addItem("TF-IDF (lexical)", userData="tfidf")
+        # Honor the Setup tab's current vectorizer choice as the default.
+        try:
+            preferred = self.current_vectorizer_kind()
+        except Exception:
+            preferred = "embedding"
+        idx = 0 if preferred == "embedding" else 1
+        vec_combo.setCurrentIndex(idx)
+
+        form.addRow("Granularity:", slider)
+        form.addRow("", live_label)
+        form.addRow("Vectorizer:", vec_combo)
+
+        # Advanced expander
+        adv_toggle = QtWidgets.QToolButton()
+        adv_toggle.setText("Advanced (raw HDBSCAN knobs)")
+        adv_toggle.setCheckable(True)
+        adv_toggle.setArrowType(QtCore.Qt.RightArrow)
+        adv_toggle.setStyleSheet("QToolButton { border: none; }")
+        adv_widget = QtWidgets.QWidget()
+        adv_form = QtWidgets.QFormLayout(adv_widget)
+        adv_form.setContentsMargins(20, 0, 0, 0)
+        adv_form.setHorizontalSpacing(10)
+        adv_form.setVerticalSpacing(8)
+
+        from textanalyzer.models.config import CategorizationConfig
+        suggested_mcs = CategorizationConfig.min_cluster_size_from_granularity(last_granularity)
+        mcs_spin = QtWidgets.QSpinBox()
+        mcs_spin.setRange(2, 200)
+        mcs_spin.setValue(int(self.settings.get("last_min_cluster_size", suggested_mcs) or suggested_mcs))
+        adv_form.addRow("Min sub-cluster size:", mcs_spin)
+
+        nr_spin = QtWidgets.QSpinBox()
+        nr_spin.setRange(1, 500)
+        nr_spin.setValue(int(self.settings.get("last_non_repetitive_min_size", 5) or 5))
+        adv_form.addRow("Non-Repetitive cutoff:", nr_spin)
+
+        adv_widget.setVisible(False)
+
+        def _toggle_adv(checked: bool) -> None:
+            adv_widget.setVisible(checked)
+            adv_toggle.setArrowType(QtCore.Qt.DownArrow if checked else QtCore.Qt.RightArrow)
+
+        adv_toggle.toggled.connect(_toggle_adv)
+
+        def _update_label() -> None:
+            g = slider.value()
+            suggested = CategorizationConfig.min_cluster_size_from_granularity(g)
+            live_label.setText(f"min_cluster_size ≈ {suggested}  (slider value: {g})")
+            # Auto-sync the spinbox suggestion *only* if user hasn't manually changed it.
+            if not adv_widget.isVisible():
+                mcs_spin.blockSignals(True)
+                mcs_spin.setValue(suggested)
+                mcs_spin.blockSignals(False)
+
+        slider.valueChanged.connect(_update_label)
+        _update_label()
+
+        layout.addLayout(form)
+        layout.addWidget(adv_toggle)
+        layout.addWidget(adv_widget)
+
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        buttons.button(QtWidgets.QDialogButtonBox.Ok).setText("Run")
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        layout.addWidget(buttons)
+
+        if dlg.exec() != QtWidgets.QDialog.Accepted:
+            return
+
+        g = int(slider.value())
+        self.settings["last_granularity"] = g
+        self.settings["last_min_cluster_size"] = int(mcs_spin.value())
+        self.settings["last_non_repetitive_min_size"] = int(nr_spin.value())
+        app_settings.save(self.settings)
+
+        categorize_kwargs = {
+            "vectorizer_kind": str(vec_combo.currentData() or "embedding"),
+            "min_cluster_size": int(mcs_spin.value()),
+            "non_repetitive_min_size": int(nr_spin.value()),
+        }
+        self.controller.run_categorization(
+            column=col, config=config, categorize_kwargs=categorize_kwargs,
+        )
+
+    def _on_ctrl_categorization_finished(self, taxonomy_result) -> None:
+        """Materialize the TaxonomyResult into the loaded dataframe + Results tab."""
+        try:
+            cleaning_result = self.controller.taxonomy_cleaning_result
+            if cleaning_result is None or self.df is None:
+                show_error(self, "Categorization failed",
+                           "Internal state error: cleaning result missing.")
+                return
+
+            # Align engine outputs (one entry per *kept* row) back to the full df.
+            n_rows = len(self.df)
+            rep = [""] * n_rows
+            sub = [""] * n_rows
+            conf = [0.0] * n_rows
+            kept = cleaning_result.kept_indices or []
+            for kept_idx, df_idx in enumerate(kept):
+                if df_idx < n_rows and kept_idx < len(taxonomy_result.repetitive):
+                    rep[df_idx] = taxonomy_result.repetitive[kept_idx]
+                    sub[df_idx] = taxonomy_result.subcategory[kept_idx]
+                    conf[df_idx] = float(taxonomy_result.confidence[kept_idx])
+            # Rows that didn't survive cleaning are non-repetitive by construction.
+            for i in range(n_rows):
+                if not rep[i]:
+                    rep[i] = "Non-Repetitive"
+                    sub[i] = "Non-Repetitive"
+
+            self.df["Repetitive/Non-Repetitive"] = rep
+            self.df["Subcategory"] = sub
+            self.df["Confidence"] = conf
+
+            # Stash for save + rename routing.
+            self.taxonomy_result = taxonomy_result
+            self.last_run_was_categorization = True
+
+            # Repopulate the Results-tab rename cards using subcategory_names.
+            # Reuse the existing cluster_names / name_entries plumbing so inline
+            # rename behaves the same; route writes through record_taxonomy_rename.
+            self.cluster_names = dict(taxonomy_result.subcategory_names)
+            self.labels = taxonomy_result.subcluster_labels
+            self.top_keywords = {
+                cid: [(kw, 1.0) for kw in name.split()[:6]]
+                for cid, name in taxonomy_result.subcategory_names.items()
+            }
+            self.populate_name_entries()
+            # Wire rename signals to persist via the controller.
+            self._wire_taxonomy_rename_signals()
+            self._select_page(self.PAGE_RESULTS)
+
+            self.save_btn.setEnabled(True)
+            self.save_taxonomy_action.setEnabled(True)
+            # Categorization doesn't train a sklearn-style model; disable Save Model.
+            self.save_model_btn.setEnabled(False)
+            stats = taxonomy_result.stats or {}
+            show_toast(
+                self,
+                f"Found {stats.get('n_subclusters', 0)} subcategories "
+                f"({stats.get('pct_non_repetitive', 0.0):.0%} Non-Repetitive)",
+                level="success",
+            )
+        finally:
+            self._set_running_state(False)
+
+    def _on_ctrl_categorization_failed(self, error_message: str) -> None:
+        show_error(self, "Error during categorization", error_message)
+        self._set_running_state(False)
+
+    def _wire_taxonomy_rename_signals(self) -> None:
+        """Persist user renames to the controller, keyed on subcluster fingerprint."""
+        if self.taxonomy_result is None:
+            return
+        fingerprints = self.taxonomy_result.sub_fingerprints or {}
+        for cid, entry in self.name_entries.items():
+            fp = fingerprints.get(int(cid), "")
+            if not fp:
+                continue
+            # editingFinished fires on blur / Enter — good signal for commit.
+            entry.editingFinished.connect(
+                lambda fp=fp, e=entry, cid=cid: self._on_taxonomy_rename(fp, e.text(), cid)
+            )
+
+    def _on_merge_cluster_clicked(self, source_cid: int) -> None:
+        """Prompt for a target cluster, merge into the lowest of the two."""
+        if self.taxonomy_result is None:
+            return
+        other_choices = [
+            (int(cid), name)
+            for cid, name in sorted(self.taxonomy_result.subcategory_names.items())
+            if int(cid) != int(source_cid)
+        ]
+        if not other_choices:
+            show_warning(self, "No other clusters", "Nothing else to merge with.")
+            return
+        labels = [f"{name}  (#{cid})" for cid, name in other_choices]
+        choice, ok = QtWidgets.QInputDialog.getItem(
+            self, "Merge cluster",
+            f"Merge '{self.taxonomy_result.subcategory_names.get(source_cid, source_cid)}' into:",
+            labels, 0, False,
+        )
+        if not ok or not choice:
+            return
+        target_cid = other_choices[labels.index(choice)][0]
+        try:
+            from textanalyzer.engine.cluster import merge_clusters as _merge
+            new_result = _merge(
+                self.taxonomy_result,
+                self.controller.taxonomy_X,
+                self.controller.taxonomy_texts,
+                [int(source_cid), int(target_cid)],
+                user_renames=self.controller.user_taxonomy_renames,
+            )
+        except Exception as exc:
+            show_error(self, "Merge failed", str(exc))
+            return
+        self.controller.edit_taxonomy(new_result)
+        show_toast(
+            self, f"Merged into '{new_result.subcategory_names.get(min(source_cid, target_cid), '?')}'",
+            level="success",
+        )
+
+    def _on_split_cluster_clicked(self, source_cid: int) -> None:
+        """Run k-means(k) on a single cluster's vectors and adopt the new split."""
+        if self.taxonomy_result is None:
+            return
+        k, ok = QtWidgets.QInputDialog.getInt(
+            self, "Split cluster",
+            f"Split '{self.taxonomy_result.subcategory_names.get(source_cid, source_cid)}' into how many sub-clusters?",
+            2, 2, 6, 1,
+        )
+        if not ok:
+            return
+        try:
+            from textanalyzer.engine.cluster import split_cluster as _split
+            new_result = _split(
+                self.taxonomy_result,
+                self.controller.taxonomy_X,
+                self.controller.taxonomy_texts,
+                int(source_cid), k=int(k),
+                user_renames=self.controller.user_taxonomy_renames,
+            )
+        except Exception as exc:
+            show_error(self, "Split failed", str(exc))
+            return
+        self.controller.edit_taxonomy(new_result)
+        show_toast(self, f"Split into {k} sub-clusters", level="success")
+
+    def _on_taxonomy_rename(self, fingerprint: str, new_name: str, cid: int) -> None:
+        text = (new_name or "").strip()
+        if not text:
+            return
+        # Update the running cluster_names map so save_with_names picks up the change.
+        self.cluster_names[int(cid)] = text
+        # Also update the df column live so the user sees the change reflected.
+        if self.df is not None and "Subcategory" in self.df.columns and self.labels is not None:
+            mask = self.labels == int(cid)
+            self.df.loc[mask, "Subcategory"] = text
+        self.controller.record_taxonomy_rename(fingerprint, text)
+
+    def save_taxonomy(self) -> None:
+        if getattr(self, "taxonomy_result", None) is None:
+            show_warning(self, "Nothing to save", "Run categorization first")
+            return
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Save Taxonomy", "", "Joblib files (*.joblib)"
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".joblib"):
+            path += ".joblib"
+        # Refresh the taxonomy_result's subcategory_names with any inline edits
+        # the user just made so the saved bundle reflects them.
+        self.taxonomy_result.subcategory_names = dict(self.cluster_names)
+        self.controller.save_taxonomy(path)
+
+    def load_taxonomy_apply(self) -> None:
+        """Load a saved taxonomy .joblib and apply it to the loaded data."""
+        if self.df is None:
+            show_warning(self, "No data", "Open a file first, then load a taxonomy to apply.")
+            return
+        col = self.current_column_name()
+        if not col or col not in self.df.columns:
+            show_warning(self, "No column", "Select a text column on the Setup tab first.")
+            return
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Load Taxonomy", "", "Joblib files (*.joblib);;All files (*)"
+        )
+        if not path:
+            return
+        payload = self.controller.load_taxonomy(path)
+        if payload is None:
+            return
+        self.open_categorization_dialog(taxonomy_payload=payload)
+
     def save_with_names(self):
         if self.df is None or self.labels is None:
             show_warning(self, "Nothing to save", "Run clustering first")
@@ -1562,17 +2106,34 @@ class ClusterGUI(QtWidgets.QMainWindow):
                 show_warning(self, "Invalid input", f"Cluster name for cluster {cid} cannot be empty")
                 return
             final_names[cid] = name
-        self.df["cluster_name"] = [final_names.get(int(label), "") for label in self.labels]
         out = self.out_edit.text().strip()
         if not out:
             show_warning(self, "No output", "Provide an output filepath")
             return
+
+        categorization_mode = bool(getattr(self, "last_run_was_categorization", False))
         try:
-            saved_path = save_results(self.df, out)
-            self.log_msg(f"âœ“ Results saved to {saved_path}")
+            if categorization_mode:
+                # Refresh the Subcategory column with the latest inline-renames,
+                # then write Inc + pivot sheets (for .xlsx) via the IO service.
+                for cid, name in final_names.items():
+                    mask = self.labels == int(cid)
+                    self.df.loc[mask, "Subcategory"] = name
+                if out.lower().endswith(".xlsx"):
+                    # Pass the TaxonomyResult so the pivot sheet picks up
+                    # Avg Confidence per subcategory + the suggested Group column.
+                    saved_path = IOService.save_results_with_pivot(
+                        self.df, out, taxonomy_result=self.taxonomy_result,
+                    )
+                else:
+                    saved_path = save_results(self.df, out)
+            else:
+                self.df["cluster_name"] = [final_names.get(int(label), "") for label in self.labels]
+                saved_path = save_results(self.df, out)
+            self.log_msg(f"✓ Results saved to {saved_path}")
             show_toast(self, f"Saved to {os.path.basename(saved_path)}", level="success")
         except Exception as error:
-            self.log_msg(f"âœ— Save failed: {error}")
+            self.log_msg(f"✗ Save failed: {error}")
             show_error(self, "Save failed", error)
 
     def save_model(self):
@@ -1690,11 +2251,7 @@ class ClusterGUI(QtWidgets.QMainWindow):
             from cluster_tool import vectorize_texts as _vectorize
             vectorizer, X = _vectorize(
                 cleaning_result.cluster_input_texts,
-                max_features=self._tfidf_settings["max_features"],
-                min_df=self._tfidf_settings["min_df"],
-                max_df=self._tfidf_settings["max_df"],
-                ngram_range=self._tfidf_settings["ngram_range"],
-                use_hashing=self._tfidf_settings["use_hashing"],
+                **self._build_vectorize_kwargs(),
             )
         except Exception as exc:
             show_error(self, "Vectorization failed", str(exc))
@@ -1818,6 +2375,89 @@ class ClusterGUI(QtWidgets.QMainWindow):
             f"min_df={self._tfidf_settings['min_df']}, max_df={self._tfidf_settings['max_df']}, "
             f"ngram={self._tfidf_settings['ngram_range']}, "
             f"hashing={self._tfidf_settings['use_hashing']}"
+        )
+
+    def open_advanced_embedding(self):
+        """Modal exposing model name / device / batch size for sentence embeddings."""
+        try:
+            from textanalyzer.engine.cluster import _ST_AVAILABLE as _ST_OK
+        except Exception:
+            _ST_OK = False
+        if not _ST_OK:
+            show_error(
+                self,
+                "sentence-transformers not installed",
+                "Embedding mode requires the sentence-transformers package.\n\n"
+                "Install with:\n\n    pip install sentence-transformers",
+            )
+            return
+
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("Advanced embedding settings")
+        dlg.setModal(True)
+        form = QtWidgets.QFormLayout(dlg)
+        form.setHorizontalSpacing(10)
+        form.setVerticalSpacing(10)
+
+        model_combo = QtWidgets.QComboBox()
+        model_combo.setEditable(True)
+        model_combo.addItems([
+            "sentence-transformers/all-MiniLM-L6-v2",
+            "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+            "sentence-transformers/all-mpnet-base-v2",
+        ])
+        model_combo.setCurrentText(str(self._embedding_settings["model"]))
+        model_combo.setToolTip(
+            "HuggingFace model id. MiniLM-L6-v2 (~80MB) is the fast default; "
+            "mpnet-base-v2 (~420MB) gives higher quality at 3x the cost."
+        )
+        form.addRow("Model", model_combo)
+
+        device_combo = QtWidgets.QComboBox()
+        device_combo.addItems(["cpu", "cuda"])
+        idx = device_combo.findText(str(self._embedding_settings["device"]))
+        if idx >= 0:
+            device_combo.setCurrentIndex(idx)
+        device_combo.setToolTip(
+            "Inference device. 'cuda' requires a CUDA-capable GPU + matching "
+            "PyTorch install; falls back to CPU at runtime if unavailable."
+        )
+        form.addRow("Device", device_combo)
+
+        batch_spin = QtWidgets.QSpinBox()
+        batch_spin.setRange(1, 512)
+        batch_spin.setSingleStep(8)
+        batch_spin.setValue(int(self._embedding_settings["batch_size"]))
+        batch_spin.setToolTip("Rows encoded per inference batch (higher = faster, more RAM/VRAM)")
+        form.addRow("Batch size", batch_spin)
+
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        form.addRow(buttons)
+
+        if dlg.exec() != QtWidgets.QDialog.Accepted:
+            return
+
+        self._embedding_settings.update({
+            "model": model_combo.currentText().strip() or "sentence-transformers/all-MiniLM-L6-v2",
+            "device": device_combo.currentText(),
+            "batch_size": int(batch_spin.value()),
+        })
+        # Persist immediately for cross-session continuity.
+        self.settings["embedding_model"] = self._embedding_settings["model"]
+        self.settings["embedding_device"] = self._embedding_settings["device"]
+        self.settings["embedding_batch_size"] = self._embedding_settings["batch_size"]
+        try:
+            app_settings.save(self.settings)
+        except Exception:
+            pass
+        self.log_msg(
+            f"Embeddings: model={self._embedding_settings['model']}, "
+            f"device={self._embedding_settings['device']}, "
+            f"batch_size={self._embedding_settings['batch_size']}"
         )
 
     def compare_algorithms_dialog(self):

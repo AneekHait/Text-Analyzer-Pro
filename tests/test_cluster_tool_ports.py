@@ -345,3 +345,73 @@ class TestLoadTableExcelFormats:
         assert ct.EXCEL_INPUT_EXTENSIONS == {
             ".xlsx", ".xlsm", ".xltx", ".xltm", ".xls", ".xlsb", ".ods"
         }
+
+
+# ---------------------------------------------------------------------------
+# Embedding vectorizer (sentence-transformers)
+# ---------------------------------------------------------------------------
+
+class TestEmbeddingVectorizer:
+    """Tests covering the embedding-mode vectorization path.
+
+    Tests that need the actual model are skipped when sentence-transformers
+    isn't installed. The error-handling tests run regardless.
+    """
+
+    def test_use_hashing_with_embedding_is_rejected(self, clean_corpus):
+        with pytest.raises(ValueError, match="incompatible"):
+            ct.vectorize_texts(
+                clean_corpus, vectorizer_kind="embedding", use_hashing=True
+            )
+
+    def test_unknown_vectorizer_kind_is_rejected(self, clean_corpus):
+        with pytest.raises(ValueError, match="Unknown vectorizer_kind"):
+            ct.vectorize_texts(clean_corpus, vectorizer_kind="word2vec")
+
+    def test_missing_dep_raises_install_hint(self, clean_corpus, monkeypatch):
+        # Pretend sentence-transformers is not installed and confirm the
+        # error message points the user at the right pip install command.
+        monkeypatch.setattr(ct, "_ST_AVAILABLE", False)
+        vec = ct.EmbeddingVectorizer()
+        with pytest.raises(ImportError, match="sentence-transformers"):
+            vec.fit_transform(clean_corpus)
+
+    def test_vectorize_embedding_returns_dense_matrix(self, clean_corpus):
+        pytest.importorskip("sentence_transformers")
+        vec, X = ct.vectorize_texts(clean_corpus, vectorizer_kind="embedding")
+        assert isinstance(vec, ct.EmbeddingVectorizer)
+        # Dense, 2D, rows == corpus, cols == model dim (MiniLM = 384).
+        assert hasattr(X, "shape") and X.ndim == 2
+        assert X.shape[0] == len(clean_corpus)
+        assert X.shape[1] > 0
+        # L2-normalized — every row should have ~unit norm.
+        norms = np.linalg.norm(X, axis=1)
+        assert np.allclose(norms, 1.0, atol=1e-3)
+
+    def test_top_keywords_for_embedding_uses_side_tfidf(self, clean_corpus):
+        pytest.importorskip("sentence_transformers")
+        vec, X = ct.vectorize_texts(clean_corpus, vectorizer_kind="embedding")
+        model, labels = ct.cluster_texts(X, algorithm="kmeans", n_clusters=4)
+        kw = ct.get_top_keywords_per_cluster(vec, X, labels, top_n=3)
+        # Side TF-IDF should produce non-empty keyword lists per cluster.
+        assert set(kw.keys()) == set(int(l) for l in np.unique(labels) if l != -1)
+        assert all(len(v) > 0 for v in kw.values())
+
+    def test_save_load_roundtrip_drops_model_handle(self, clean_corpus, tmp_path):
+        pytest.importorskip("sentence_transformers")
+        import joblib
+        vec, _ = ct.vectorize_texts(clean_corpus, vectorizer_kind="embedding")
+        # Force the model to load so we can verify it's dropped on pickle.
+        vec._ensure_loaded()
+        assert vec._model is not None
+        path = tmp_path / "embed_vec.joblib"
+        joblib.dump(vec, path)
+        loaded = joblib.load(path)
+        # The heavy model handle is *not* persisted.
+        assert loaded._model is None
+        # But the side TF-IDF + training texts survive — keywords still work.
+        assert loaded._side_tfidf is not None
+        assert loaded._training_texts == clean_corpus
+        # And transform() re-loads the model lazily.
+        Y = loaded.transform(["a quick test sentence"])
+        assert Y.shape == (1, _.shape[1])

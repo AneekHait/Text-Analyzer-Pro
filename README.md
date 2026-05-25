@@ -40,6 +40,28 @@ Use it for customer-feedback clustering, survey-response analysis, support-ticke
 - Save and reuse cleaning recipes across sessions
 - Live preview of cleaning effects before clustering
 
+### Vectorization
+- **TF-IDF (default)** — sparse lexical features; fast, explainable, zero extra install
+- **Sentence embeddings (optional)** — dense semantic features via [sentence-transformers](https://www.sbert.net/); clusters synonyms and paraphrases that TF-IDF splits apart. Default model is `all-MiniLM-L6-v2` (384-dim, ~80MB, CPU-friendly). Cluster names still come from a side TF-IDF fit on the same texts.
+- Switch modes in the **Setup tab** vectorizer combo. **Advanced TF-IDF** and **Advanced embeddings…** dialogs expose model / device / batch size.
+
+### Categorization (single-level taxonomy)
+- **Run Categorization** discovers a per-dataset taxonomy: each ticket gets `Repetitive/Non-Repetitive`, `Subcategory`, and `Confidence` columns
+- Subcategory names are **deterministic** — no LLM dependency. Three layered name-extraction strategies pick the most readable one:
+  1. **Sample-derived n-grams** — a 3-5 word phrase that appears in ≥2 representative tickets and overlaps with the cluster's top keywords (reads like a real ticket subject)
+  2. **c-TF-IDF top terms** — class-based TF-IDF surfaces what makes the cluster *distinctive* across the corpus
+  3. **Original-case preservation** — `SAP`, `ECC`, `RP1`, `PowerBI` keep their original casing instead of collapsing to `Sap`, `Ecc`
+- **Pre-clustering UMAP** — when `umap-learn` is installed, sentence embeddings are reduced to ~15 dims before HDBSCAN (the BERTopic recipe). Optional dep; pipeline silently passes through when missing
+- HDBSCAN noise + clusters smaller than the cutoff land in **Non-Repetitive**; clusters with ≥25k rows automatically switch to a MiniBatchKMeans fallback with percentile noise tagging
+- **Confidence column** combines HDBSCAN's per-point membership probability with margin-to-next-best cluster (calibrated signal, not raw cosine)
+- **Granularity slider** (Coarse ↔ Fine) is the primary control; an Advanced expander exposes raw `min_cluster_size` / `non_repetitive_min_size` spinboxes
+- **Results tab drill-down**: click a subcategory to expand 3-5 representative ticket samples (closest to centroid). Each card also gets **Merge into…** and **Split…** buttons for post-hoc taxonomy editing
+- **Excel export** auto-writes a second **`pivot`** sheet — base columns + per-subcategory `Avg Confidence` + an optional `Group` column derived from Ward hierarchical clustering on the centroids
+- **Save Taxonomy / Load Taxonomy** persists the trained taxonomy + manifest (model id, knobs, timestamps, scale path) as a `.joblib`. The Load flow surfaces the manifest summary so you can audit provenance before re-applying. Apply to a fresh ticket batch via cosine-to-centroid — skips HDBSCAN, runs in seconds
+- Inline-rename a subcategory in the Results tab and the rename **persists across re-runs** via subcluster fingerprints (robust to cleaning changes)
+
+> **Optional**: `pip install umap-learn` enables the pre-clustering UMAP reduction (~30 MB, pulls in `numba`). Sentence embeddings alone work fine without it.
+
 ### Clustering
 - Algorithms: **kmeans++** (default), **hdbscan**, **agglomerative**, **dbscan**
 - Auto-switch to **MiniBatchKMeans** at 10k+ rows for memory-bounded runs
@@ -96,7 +118,7 @@ pip install -r requirements.txt
 python gui.py
 ```
 
-> **Optional**: `pip install hdbscan` enables the HDBSCAN algorithm. `pip install cuml` (Linux + NVIDIA GPU) enables GPU-accelerated KMeans.
+> **Optional**: `pip install hdbscan` enables the HDBSCAN algorithm. `pip install cuml` (Linux + NVIDIA GPU) enables GPU-accelerated KMeans. `pip install sentence-transformers` enables the **Embeddings** vectorizer mode (~80MB model downloaded on first run).
 
 ---
 
@@ -129,6 +151,17 @@ python cluster_tool.py -i data.xlsx -c comments -a dbscan --eps 0.4 --min_sample
 
 # Memory-efficient TF-IDF for huge corpora
 python cluster_tool.py -i big.csv -c text -a kmeans -k 10 --use_hashing --chunk_size 20000
+
+# Semantic clustering via sentence-transformers (requires `pip install sentence-transformers`)
+python cluster_tool.py -i data.xlsx -c comments -a kmeans -k 5 --vectorizer embedding
+
+# Single-level subcategory discovery (HDBSCAN + keyword phrasing)
+python cluster_tool.py -i tickets.xlsx --sheet Inc -c "Short description" --categorize \
+    --min_cluster_size 5 --save_taxonomy tax.joblib -o tickets_categorized.xlsx
+
+# Apply a saved taxonomy to a fresh batch (fast path — no HDBSCAN)
+python cluster_tool.py -i fresh_tickets.xlsx --sheet Inc -c "Short description" \
+    --load_taxonomy tax.joblib --confidence_threshold 0.45
 
 # Save the model
 python cluster_tool.py -i data.xlsx -c comments -a kmeans -k 5 \

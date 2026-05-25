@@ -102,6 +102,62 @@ class SettingsWindow(QtWidgets.QDialog):
         self.topn_spin.valueChanged.connect(self._on_topn_changed)
         form.addRow("Default top-N keywords:", self.topn_spin)
 
+        # Default vectorizer kind. Embedding mode is greyed-out at runtime if
+        # sentence-transformers isn't importable — mirrors the Setup-tab combo.
+        try:
+            from textanalyzer.engine.cluster import _ST_AVAILABLE as _ST_OK
+        except Exception:
+            _ST_OK = False
+        self.vec_combo = QtWidgets.QComboBox()
+        self.vec_combo.addItem("TF-IDF (lexical)", userData="tfidf")
+        self.vec_combo.addItem("Embeddings (semantic)", userData="embedding")
+        if not _ST_OK:
+            model = self.vec_combo.model()
+            item = model.item(1) if hasattr(model, "item") else None
+            if item is not None:
+                item.setEnabled(False)
+            self.vec_combo.setItemData(
+                1,
+                "Requires `pip install sentence-transformers`.",
+                QtCore.Qt.ItemDataRole.ToolTipRole,
+            )
+        last_vec = (self._settings.get("last_vectorizer_kind") or "tfidf").lower()
+        if last_vec == "embedding" and _ST_OK:
+            self.vec_combo.setCurrentIndex(1)
+        self.vec_combo.currentIndexChanged.connect(self._on_default_vec_changed)
+        form.addRow("Default vectorizer:", self.vec_combo)
+
+        self.embed_model_edit = QtWidgets.QLineEdit(
+            str(self._settings.get("embedding_model", "sentence-transformers/all-MiniLM-L6-v2"))
+        )
+        self.embed_model_edit.setToolTip(
+            "HuggingFace model id used when the vectorizer is set to Embeddings."
+        )
+        self.embed_model_edit.editingFinished.connect(self._on_embed_model_changed)
+        form.addRow("Embedding model:", self.embed_model_edit)
+
+        # Categorization defaults
+        self.min_cluster_size_spin = QtWidgets.QSpinBox()
+        self.min_cluster_size_spin.setRange(2, 200)
+        self.min_cluster_size_spin.setValue(int(self._settings.get("last_min_cluster_size", 5) or 5))
+        self.min_cluster_size_spin.setToolTip(
+            "Default min_cluster_size for HDBSCAN when Run Categorization opens."
+        )
+        self.min_cluster_size_spin.valueChanged.connect(self._on_min_cluster_size_changed)
+        form.addRow("Default min sub-cluster size:", self.min_cluster_size_spin)
+
+        self.confidence_spin = QtWidgets.QDoubleSpinBox()
+        self.confidence_spin.setRange(0.0, 1.0)
+        self.confidence_spin.setSingleStep(0.05)
+        self.confidence_spin.setDecimals(2)
+        self.confidence_spin.setValue(float(self._settings.get("taxonomy_confidence_threshold", 0.45) or 0.45))
+        self.confidence_spin.setToolTip(
+            "Cosine-similarity cutoff for apply_taxonomy. Rows below this fall "
+            "into Non-Repetitive when re-applying a saved taxonomy."
+        )
+        self.confidence_spin.valueChanged.connect(self._on_confidence_changed)
+        form.addRow("Taxonomy confidence threshold:", self.confidence_spin)
+
         return page
 
     def _build_data_tab(self) -> QtWidgets.QWidget:
@@ -172,6 +228,28 @@ class SettingsWindow(QtWidgets.QDialog):
         self._settings["default_top_n"] = int(value)
         app_settings.save(self._settings)
         self.settings_changed.emit({"default_top_n": int(value)})
+
+    def _on_default_vec_changed(self, _idx: int) -> None:
+        kind = self.vec_combo.currentData() or "tfidf"
+        self._settings["last_vectorizer_kind"] = str(kind)
+        app_settings.save(self._settings)
+        self.settings_changed.emit({"last_vectorizer_kind": str(kind)})
+
+    def _on_embed_model_changed(self) -> None:
+        model = self.embed_model_edit.text().strip() or "sentence-transformers/all-MiniLM-L6-v2"
+        self._settings["embedding_model"] = model
+        app_settings.save(self._settings)
+        self.settings_changed.emit({"embedding_model": model})
+
+    def _on_min_cluster_size_changed(self, value: int) -> None:
+        self._settings["last_min_cluster_size"] = int(value)
+        app_settings.save(self._settings)
+        self.settings_changed.emit({"last_min_cluster_size": int(value)})
+
+    def _on_confidence_changed(self, value: float) -> None:
+        self._settings["taxonomy_confidence_threshold"] = float(value)
+        app_settings.save(self._settings)
+        self.settings_changed.emit({"taxonomy_confidence_threshold": float(value)})
 
     def _clear_recent(self) -> None:
         self._settings["recent_files"] = []

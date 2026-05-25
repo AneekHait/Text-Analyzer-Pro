@@ -222,4 +222,131 @@ suite of new productivity tools and a rewritten Wordcloud Studio.
 
 ## [Unreleased]
 
-- (intentionally empty — pending the next round of changes)
+### Improved
+
+- **Categorization name quality** — three layered improvements take generated
+  names from glued keywords to readable phrases:
+  - **c-TF-IDF for naming**: replaces the per-cluster mean TF-IDF with
+    class-based TF-IDF (BERTopic recipe). Top terms now reflect what's
+    *distinctive* across clusters rather than what's merely frequent inside one.
+  - **Original-case preservation**: technical acronyms (``SAP``, ``ECC``,
+    ``RP1``, ``PowerBI``) retain their original casing in subcategory names
+    instead of collapsing to ``Sap``, ``Ecc``, ``Rp1``. Other words still
+    Title-Case as before.
+  - **Sample-derived n-gram candidates**: when a 3-5 word phrase appears in
+    ≥2 representative tickets (closest to centroid) AND shares ≥2 tokens
+    with the cluster's top keywords, that phrase wins over glued keywords.
+    Reads like a real ticket subject.
+  - Word-level dedup in ``phrase_name_from_keywords``: rendered names no
+    longer repeat words across unigram + n-gram candidates.
+
+- **Categorization cluster quality** — optional UMAP dim-reduction step
+  between sentence embeddings and HDBSCAN (the BERTopic / Top2Vec recipe).
+  Reduces 384-dim embeddings to ~15 dims, killing high-D distance
+  concentration. Produces tighter, finer-grained clusters when ``umap-learn``
+  is installed; pipeline silently passes through when not.
+
+- **Calibrated confidence column** — the per-row Confidence now combines
+  HDBSCAN's ``probabilities_`` (when available) with margin-to-next-best
+  centroid. Replaces the bare cosine-to-centroid which had poor calibration.
+  ``apply_taxonomy`` (fast-path Load Taxonomy) uses the cosine + margin
+  variant since it has no HDBSCAN model.
+
+- **Scale guard** — corpora ≥ 25,000 rows automatically switch sub-clustering
+  to ``MiniBatchKMeans`` + percentile-based noise tagging in place of
+  HDBSCAN, which is unusably slow above that size.
+
+- **Manifest in saved taxonomy** — ``.joblib`` bundles now carry a manifest
+  (timestamp, model id, knobs, scale path, row count, UMAP applied flag).
+  ``IOService.describe_taxonomy`` renders it as a one-line audit summary,
+  surfaced when the user loads a taxonomy.
+
+- **Pivot-sheet enrichments** — Excel exports gain:
+  - ``Avg Confidence`` per subcategory (when a TaxonomyResult is supplied).
+  - ``Group`` column derived post-hoc via Ward hierarchical clustering on
+    cluster centroids (optional; degrades gracefully if SciPy is missing).
+
+### Added
+
+- **Merge / Split clusters** — Results-tab cluster cards in categorization
+  mode gain **Merge into…** and **Split…** buttons. Merge combines two
+  subcategories into the lowest-id of the pair and recomputes the merged
+  cluster's name + centroid + confidence. Split runs k-means(k) on a single
+  cluster's vectors and assigns the new groups fresh ids. New engine helpers
+  ``merge_clusters()`` and ``split_cluster()`` expose both operations; both
+  preserve any fingerprint-keyed user renames.
+
+- **Results-tab sample drill-down** — each subcategory card in categorization
+  mode now exposes a collapsible "Show N sample tickets" panel listing the
+  3-5 rows closest to the cluster centroid, plus an "avg confidence" badge.
+
+### Future TODOs
+
+- **Multi-column input** for categorization: combine Short description +
+  Description + Resolution notes with user-configurable weights for richer
+  cluster signal. Currently the pipeline uses one column at a time.
+
+- **Single-level subcategory discovery (Run Categorization)** — a new workflow
+  alongside Run Clustering that produces a per-dataset taxonomy. Output adds
+  three columns to the loaded dataframe: `Repetitive/Non-Repetitive`,
+  `Subcategory`, and `Confidence`.
+  - **Pipeline**: cleaning → vectorize (embedding or TF-IDF) → HDBSCAN →
+    noise + clusters smaller than `non_repetitive_min_size` merged into
+    Non-Repetitive → cosine-to-centroid confidence → deterministic
+    Title Case phrase names from an n-gram side TF-IDF.
+  - **Naming is fully deterministic** — same inputs always produce the same
+    subcategory strings. No LLM dependency.
+  - **User-rename preservation across re-runs**: each subcluster has a stable
+    fingerprint (sha256 of its top keywords). User-edited names are stored
+    keyed on fingerprint, so cleaning changes that shift cluster ids still
+    preserve renames.
+  - **Granularity slider** (Coarse ↔ Fine) is the primary control in the new
+    Run Categorization dialog; an Advanced expander shows raw
+    `min_cluster_size` / `non_repetitive_min_size` spinboxes.
+  - **Save Taxonomy / Load Taxonomy** actions persist a trained taxonomy
+    (vectorizer + centroids + names + fingerprints + user renames) as a
+    `.joblib`. Loading and applying skips HDBSCAN entirely (fast path).
+  - **Schema-versioned taxonomy bundles** with a clear error on version
+    mismatch; legacy clustering `.joblib` bundles continue to load via the
+    existing Load Model action.
+  - **Pivot-sheet auto-generation**: `.xlsx` exports gain a second `pivot`
+    sheet (Subcategory → Ticket Count + %) mirroring the reference
+    workbook's rollup style. CSV / JSON exports get the three columns.
+  - **CLI**: new flags `--categorize`, `--save_taxonomy`, `--load_taxonomy`,
+    `--confidence_threshold`, `--non_repetitive_min_size`.
+  - **Engine**: `categorize_taxonomy()`, `apply_taxonomy()`,
+    `phrase_name_from_keywords()`, `TaxonomyResult` dataclass added to
+    `textanalyzer.engine.cluster`.
+  - **Settings → Defaults tab** persists default min sub-cluster size and the
+    confidence threshold used by `apply_taxonomy`.
+  - **Tests**: ~30 new tests covering phrase naming, fingerprint stability
+    under reorder/case, Non-Repetitive bucketing, save/load round-trip,
+    schema-version guards, pivot sheet generation, and UI smoke checks
+    (button presence, running-state gating, slider formula).
+
+- **Sentence-embedding vectorization** as an alternative to TF-IDF. New
+  `vectorizer_kind="embedding"` parameter on `vectorize_texts` returns dense,
+  L2-normalized sentence embeddings via `sentence-transformers` (default
+  model: `all-MiniLM-L6-v2`, 384-dim). Captures semantic similarity —
+  synonyms and paraphrases cluster together where TF-IDF would split them.
+  - **Optional dependency**: install with `pip install sentence-transformers`.
+    Mirrors the HDBSCAN/NLTK pattern — clear `ImportError` with an install
+    hint when the user picks embeddings without the package installed.
+  - **EmbeddingVectorizer adapter** preserves the `(.fit_transform / .transform)`
+    contract so workers, controllers, `find_optimal_k`, `compare_algorithms`,
+    `ApplicableModel`, save/load — all work unchanged with embedding output.
+  - **Side TF-IDF** is fit on the same training texts and used by
+    `get_top_keywords_per_cluster` so cluster names stay human-readable even
+    when the primary feature matrix is dense embeddings.
+  - **Setup tab** gains a vectorizer combo (TF-IDF / Embeddings) plus an
+    **Advanced embeddings…** dialog (model, device cpu/cuda, batch size).
+    The embeddings option is disabled with an install-hint tooltip when
+    `sentence-transformers` is missing.
+  - **Settings → Defaults tab** persists the default vectorizer kind and
+    default embedding model id across sessions.
+  - **CLI**: new flags `--vectorizer {tfidf,embedding}`, `--embedding_model`,
+    `--embedding_device`, `--embedding_batch_size`.
+  - **Persistence**: saved `.joblib` artifacts in embedding mode drop the
+    heavy model handle (`__getstate__`) so files stay a few KB; the model
+    re-loads lazily on the next `transform()` call from the
+    sentence-transformers on-disk cache.

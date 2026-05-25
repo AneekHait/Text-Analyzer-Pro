@@ -20,6 +20,15 @@ DEFAULTS = {
     "last_column": "",
     "last_algorithm": "kmeans",
     "cleaning_recipes": {},  # name -> dict
+    "last_vectorizer_kind": "tfidf",  # 'tfidf' | 'embedding'
+    "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+    "embedding_device": "cpu",  # 'cpu' | 'cuda'
+    "embedding_batch_size": 32,
+    "last_min_cluster_size": 5,
+    "last_non_repetitive_min_size": 5,
+    "last_granularity": 50,
+    "taxonomy_confidence_threshold": 0.45,
+    "user_taxonomy_renames": {},  # fingerprint -> edited subcategory name
 }
 
 # Keys mirrored to QSettings for OS-level integration (geometry restore,
@@ -52,6 +61,8 @@ def load() -> dict:
         merged["recent_files"] = []
     if not isinstance(merged.get("cleaning_recipes"), dict):
         merged["cleaning_recipes"] = {}
+    if not isinstance(merged.get("user_taxonomy_renames"), dict):
+        merged["user_taxonomy_renames"] = {}
     return merged
 
 
