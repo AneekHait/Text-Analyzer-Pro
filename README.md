@@ -1,6 +1,6 @@
 # Text Analyzer Pro
 
-[![Tests](https://img.shields.io/badge/tests-116%20passing-brightgreen)]() [![Python](https://img.shields.io/badge/python-3.10%2B-blue)]() [![PySide6](https://img.shields.io/badge/Qt-PySide6-success)]() [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Tests](https://img.shields.io/badge/tests-187%20passing-brightgreen)]() [![Python](https://img.shields.io/badge/python-3.10%2B-blue)]() [![PySide6](https://img.shields.io/badge/Qt-PySide6-success)]() [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Python desktop app for **text clustering and word-cloud analysis** of Excel, CSV, JSON, and ODS files using **TF-IDF**, **KMeans (k-means++)**, **HDBSCAN**, **DBSCAN**, **Agglomerative**, and a polished **Wordcloud Studio**.
 
@@ -8,7 +8,7 @@ Use it for customer-feedback clustering, survey-response analysis, support-ticke
 
 ---
 
-![Text Analyzer Pro v2.0 main window — Setup tab with the drag-and-drop dropzone, kmeans++ algorithm dropdown, Suggest / Elbow / Compare / Advanced TF-IDF buttons, and the sidebar navigation](assets/screenshot-setup.png)
+![Text Analyzer Pro v2.0 main window — Setup tab with the drag-and-drop dropzone, Vectorizer combo (TF-IDF / Embeddings) with the Advanced Embeddings… dialog, kmeans++ algorithm dropdown, Suggest / Elbow / Compare / Advanced TF-IDF buttons, sidebar navigation, and the Run Categorization + Run Clustering buttons in the action bar](assets/screenshot-setup.png)
 
 ---
 
