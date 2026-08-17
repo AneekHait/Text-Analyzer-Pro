@@ -111,8 +111,16 @@ $RECYCLE.BIN/
 logs/
 
 # ==========================================================================
+# PyInstaller
+# ==========================================================================
+*.spec
+dist/
+build/
+
+# ==========================================================================
 # Project-specific local files
 # ==========================================================================
 # Plan files written by tooling (kept outside the repo by default, but guard
 # against accidental copies landing here).
 plans/
+image.png

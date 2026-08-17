@@ -57,3 +57,37 @@ def chevron_down_url(color_hex: str, size: int = 10) -> str:
     url = path.replace(os.sep, "/")
     _CACHE[key] = url
     return url
+
+
+def checkmark_url(color_hex: str, size: int = 14) -> str:
+    """Render a checkmark/tick of the given color and return a URL-safe path."""
+    key = f"checkmark-{color_hex.lstrip('#')}-{size}.png"
+    if key in _CACHE:
+        return _CACHE[key]
+
+    path = os.path.join(_ensure_cache_dir(), key)
+    if not os.path.exists(path):
+        pixmap = QtGui.QPixmap(size, size)
+        pixmap.fill(QtCore.Qt.transparent)
+        painter = QtGui.QPainter(pixmap)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        pen = QtGui.QPen(QtGui.QColor(color_hex))
+        pen.setWidth(max(2, size // 7))
+        pen.setCapStyle(QtCore.Qt.RoundCap)
+        pen.setJoinStyle(QtCore.Qt.RoundJoin)
+        painter.setPen(pen)
+        m = size * 0.15
+        painter.drawLine(
+            QtCore.QPointF(m, size * 0.55),
+            QtCore.QPointF(size * 0.38, size * 0.78),
+        )
+        painter.drawLine(
+            QtCore.QPointF(size * 0.38, size * 0.78),
+            QtCore.QPointF(size - m, size * 0.25),
+        )
+        painter.end()
+        pixmap.save(path, "PNG")
+
+    url = path.replace(os.sep, "/")
+    _CACHE[key] = url
+    return url

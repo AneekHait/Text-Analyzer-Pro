@@ -1,11 +1,12 @@
 """QSS stylesheet builder. Pure function of token dict."""
 from .tokens import get_tokens
-from .assets import chevron_down_url
+from .assets import checkmark_url, chevron_down_url
 
 
 def build_qss(mode: str = "light") -> str:
     t = get_tokens(mode)
     chevron_url = chevron_down_url(t["text_muted"])
+    check_url = checkmark_url("#ffffff", 14)
     return f"""
 /* ========== Base ========== */
 * {{
@@ -313,7 +314,7 @@ QCheckBox::indicator:hover, QRadioButton::indicator:hover {{
 QCheckBox::indicator:checked {{
     background: {t['accent']};
     border: 1px solid {t['accent']};
-    image: none;
+    image: url("{check_url}");
 }}
 QRadioButton::indicator:checked {{
     background: {t['accent']};

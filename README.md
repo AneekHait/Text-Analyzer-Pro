@@ -8,7 +8,17 @@ Use it for customer-feedback clustering, survey-response analysis, support-ticke
 
 ---
 
-![Text Analyzer Pro v2.0 main window — Setup tab with the drag-and-drop dropzone, Vectorizer combo (TF-IDF / Embeddings) with the Advanced Embeddings… dialog, kmeans++ algorithm dropdown, Suggest / Elbow / Compare / Advanced TF-IDF buttons, sidebar navigation, and the Run Categorization + Run Clustering buttons in the action bar](assets/screenshot-setup.png)
+### Setup
+
+![Setup tab — drag-and-drop dropzone, Vectorizer combo (TF-IDF / Embeddings), kmeans++ algorithm, Suggest / Elbow / Compare buttons, and Run Clustering action bar](assets/Setup-Screen.png)
+
+### Cleaning
+
+![Cleaning tab — toggle cleaning rules (whitespace, punctuation, URLs, lemmatization), custom regex find/replace, save/load recipes, and live before/after preview](assets/Cleaning-Screen.png)
+
+### Results
+
+![Results tab — editable cluster names, 2D PCA/t-SNE visualization, status log, and Save Results / Save Model actions](assets/Result-Screen.png)
 
 ---
 

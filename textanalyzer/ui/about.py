@@ -11,7 +11,7 @@ class AboutDialog(QtWidgets.QDialog):
     def __init__(self, owner_name, owner_contact, owner_website, owner_bmc, parent=None):
         super().__init__(parent)
         self.setWindowTitle("About Text Analyzer Pro")
-        self.setMinimumWidth(520)
+        self.setMinimumWidth(540)
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(28, 22, 28, 18)
@@ -48,9 +48,21 @@ class AboutDialog(QtWidgets.QDialog):
 
         body = QtWidgets.QLabel(
             "<p style='line-height:1.45; margin:0'>"
-            "Intelligent text clustering and word-cloud analysis for Excel, CSV, and JSON files. "
+            "Intelligent text clustering and word-cloud analysis for Excel, CSV, JSON, and ODS files. "
             "All processing happens locally on your machine — nothing is uploaded.</p>"
-            f"<p style='margin:8px 0 0 0'><b>Owner:</b> {owner_name}</p>"
+            "<p style='line-height:1.45; margin:8px 0 0 0'>"
+            "<b>Key features:</b></p>"
+            "<ul style='margin:2px 0 0 0; padding-left:18px; line-height:1.5'>"
+            "<li>TF-IDF and Sentence Embeddings vectorization</li>"
+            "<li>KMeans++, HDBSCAN, DBSCAN, Agglomerative clustering</li>"
+            "<li>Automatic subcategory discovery (Run Categorization)</li>"
+            "<li>Suggest K, Elbow, and Compare Algorithms utilities</li>"
+            "<li>Cleaning recipes with live preview and lemmatization</li>"
+            "<li>Interactive Wordcloud Studio with mask shapes</li>"
+            "<li>Save/Load models and taxonomies for batch re-use</li>"
+            "</ul>"
+            f"<p style='margin:10px 0 0 0'><b>Created by:</b> {owner_name}</p>"
+            "<p style='margin:2px 0 0 0; color:gray'>Python 3.10+ &bull; PySide6 &bull; scikit-learn &bull; MIT License</p>"
         )
         body.setTextFormat(QtCore.Qt.RichText)
         body.setWordWrap(True)
