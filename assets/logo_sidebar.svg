@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 80" width="200" height="80">
+  <defs>
+    <linearGradient id="sg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#4f8cff"/>
+      <stop offset="100%" stop-color="#7b5dff"/>
+    </linearGradient>
+  </defs>
+  <!-- Icon mark (compact cluster visual) -->
+  <rect x="4" y="12" width="56" height="56" rx="14" ry="14" fill="url(#sg)"/>
+  <circle cx="24" cy="34" r="10" fill="rgba(255,255,255,0.18)"/>
+  <circle cx="40" cy="34" r="10" fill="rgba(255,255,255,0.18)"/>
+  <circle cx="32" cy="48" r="10" fill="rgba(255,255,255,0.18)"/>
+  <circle cx="32" cy="38" r="5" fill="#ffffff"/>
+  <circle cx="20" cy="28" r="2.5" fill="rgba(255,255,255,0.85)"/>
+  <circle cx="44" cy="28" r="2.5" fill="rgba(255,255,255,0.85)"/>
+  <circle cx="32" cy="56" r="2.5" fill="rgba(255,255,255,0.85)"/>
+  <!-- Wordmark -->
+  <text x="70" y="38" font-family="'Segoe UI','Inter',Arial,sans-serif" font-size="16" font-weight="700" fill="#ffffff" letter-spacing="0.3">Text Analyzer</text>
+  <text x="70" y="58" font-family="'Segoe UI','Inter',Arial,sans-serif" font-size="13" font-weight="500" fill="rgba(255,255,255,0.65)" letter-spacing="0.5">Pro</text>
+</svg>

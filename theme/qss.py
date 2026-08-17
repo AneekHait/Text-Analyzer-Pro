@@ -39,13 +39,23 @@ QLabel#SidebarBrand {{
 QLabel#SidebarTagline {{
     color: {t['sidebar_fg']};
     font-size: {t['font_size_sm']};
+    letter-spacing: 1px;
+}}
+QLabel#SidebarVersion {{
+    color: {t['sidebar_fg']};
+    font-size: {t['font_size_xs']};
+    background-color: rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+    padding: 2px 10px;
 }}
 QToolButton#SidebarNav {{
     background-color: transparent;
     color: {t['sidebar_fg']};
     border: none;
     border-left: 3px solid transparent;
-    padding: 10px 14px;
+    border-radius: 6px;
+    padding: 11px 14px;
+    margin: 2px 4px;
     text-align: left;
     font-size: {t['font_size_md']};
     font-weight: 500;
@@ -53,11 +63,13 @@ QToolButton#SidebarNav {{
 QToolButton#SidebarNav:hover {{
     background-color: {t['sidebar_active_bg']};
     color: {t['sidebar_fg_active']};
+    border-left: 3px solid rgba(255, 255, 255, 0.15);
 }}
 QToolButton#SidebarNav:checked {{
     background-color: {t['sidebar_active_bg']};
     color: {t['sidebar_fg_active']};
     border-left: 3px solid {t['sidebar_accent']};
+    font-weight: 600;
 }}
 QFrame#SidebarDivider {{
     background-color: {t['border_strong']};
@@ -86,21 +98,25 @@ QLabel#PageSubtitle {{
 QFrame#ActionBar {{
     background-color: {t['bg_elev']};
     border-top: 1px solid {t['divider']};
+    min-height: 52px;
 }}
 
 /* ========== Data source panel ========== */
 QFrame#DropZone {{
-    background-color: {t['surface_alt']};
+    background-color: {t['accent_subtle']};
     border: 2px dashed {t['border_strong']};
-    border-radius: {t['radius_md']};
+    border-radius: {t['radius_lg']};
 }}
 QFrame#DropZone:hover {{
     border-color: {t['accent']};
     background-color: {t['accent_soft']};
+    border-style: solid;
 }}
 QFrame#DropZone[dragging="true"] {{
     border-color: {t['accent']};
     background-color: {t['accent_soft']};
+    border-width: 3px;
+    border-style: solid;
 }}
 QFrame#DropZone QLabel {{
     background: transparent;
@@ -112,6 +128,7 @@ QLabel#DropZoneTitle {{
 }}
 QLabel#DropZoneSubtitle {{
     color: {t['text_muted']};
+    font-size: {t['font_size_sm']};
 }}
 QFrame#DataSourceSummary {{
     background-color: {t['surface_alt']};
@@ -220,10 +237,16 @@ QPushButton[flat="true"] {{
     background-color: transparent;
     border: 1px solid transparent;
     color: {t['accent']};
+    padding: 5px 10px;
 }}
 QPushButton[flat="true"]:hover {{
     background-color: {t['accent_soft']};
-    border-color: {t['accent_soft']};
+    border-color: {t['accent']};
+    border-radius: {t['radius_sm']};
+}}
+QPushButton[flat="true"]:pressed {{
+    background-color: {t['accent_soft']};
+    color: {t['accent_pressed']};
 }}
 
 /* ========== Inputs ========== */
@@ -238,7 +261,7 @@ QLineEdit, QPlainTextEdit, QTextEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
 }}
 QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus,
 QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {{
-    border: 1px solid {t['input_focus']};
+    border: 1.5px solid {t['input_focus']};
 }}
 QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled {{
     color: {t['text_subtle']};

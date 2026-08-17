@@ -17,4 +17,4 @@ class SidebarButton(QtWidgets.QToolButton):
         if icon_name and _HAS_QTA:
             self.setIcon(_icon(icon_name, color="#cfd3dc"))
             self.setIconSize(QtCore.QSize(18, 18))
-        self.setMinimumHeight(38)
+        self.setMinimumHeight(42)

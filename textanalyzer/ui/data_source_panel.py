@@ -37,48 +37,42 @@ class DropZone(QtWidgets.QFrame):
     file_picked = QtCore.Signal(str)
     browse_requested = QtCore.Signal()
 
+    _ZONE_HEIGHT = 150
+
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("DropZone")
         self.setAcceptDrops(True)
         self.setCursor(QtCore.Qt.PointingHandCursor)
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
-        self.setFixedHeight(120)
+        self.setFixedHeight(self._ZONE_HEIGHT)
 
-        layout = QtWidgets.QHBoxLayout(self)
-        layout.setContentsMargins(20, 14, 20, 14)
-        layout.setSpacing(14)
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(8)
         layout.setAlignment(QtCore.Qt.AlignCenter)
 
         icon_label = QtWidgets.QLabel()
         icon = _icon("fa5s.cloud-upload-alt")
-        icon_label.setPixmap(icon.pixmap(32, 32))
+        icon_label.setPixmap(icon.pixmap(40, 40))
         icon_label.setAlignment(QtCore.Qt.AlignCenter)
         layout.addWidget(icon_label)
 
-        text_col = QtWidgets.QVBoxLayout()
-        text_col.setSpacing(2)
-        text_col.setAlignment(QtCore.Qt.AlignVCenter)
-
         title = QtWidgets.QLabel("Drop your data file here")
         title.setObjectName("DropZoneTitle")
-        text_col.addWidget(title)
+        title.setAlignment(QtCore.Qt.AlignCenter)
+        layout.addWidget(title)
 
         sub = QtWidgets.QLabel("or click to browse · Excel, CSV, JSON, ODS")
         sub.setObjectName("DropZoneSubtitle")
-        text_col.addWidget(sub)
-
-        layout.addLayout(text_col)
+        sub.setAlignment(QtCore.Qt.AlignCenter)
+        layout.addWidget(sub)
 
     def sizeHint(self) -> QtCore.QSize:
-        # setFixedHeight clamps the rendered size, but Qt's default sizeHint
-        # ignores it — leaving parents (with Maximum policy) sized to the
-        # layout's natural ~60 px and clipping the dropzone. Report the locked
-        # height so the QGroupBox above us sizes correctly.
-        return QtCore.QSize(super().sizeHint().width(), 120)
+        return QtCore.QSize(super().sizeHint().width(), self._ZONE_HEIGHT)
 
     def minimumSizeHint(self) -> QtCore.QSize:
-        return QtCore.QSize(super().minimumSizeHint().width(), 120)
+        return QtCore.QSize(super().minimumSizeHint().width(), self._ZONE_HEIGHT)
 
     def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
         if event.button() == QtCore.Qt.LeftButton:

@@ -1,45 +1,55 @@
 @echo off
-REM Text Analyzer Pro - Batch Runner
-REM This script launches the GUI application with automatic setup
+REM Text Analyzer Pro - Launcher
+REM First run: creates venv and installs dependencies
+REM Subsequent runs: launches the app directly
 
 cd /d "%~dp0"
-
-REM Display ASCII Banner
-REM Display ASCII Banner (read from file to avoid CMD parsing issues)
 cls
 echo.
 type "%~dp0ascii_banner.txt"
 echo.
 echo.
-echo                       
 
 REM Check if venv exists
-if not exist .venv (
-    echo [*] Virtual environment not found. Creating...
+if not exist .venv\Scripts\python.exe (
+    echo ============================================================
+    echo   FIRST RUN - Setting up environment...
+    echo ============================================================
+    echo.
+    echo [1/3] Creating virtual environment...
     python -m venv .venv
     if errorlevel 1 (
-        echo [!] Failed to create virtual environment
+        echo [!] ERROR: Failed to create virtual environment.
+        echo     Make sure Python 3.10+ is installed and on PATH.
         pause
         exit /b 1
     )
-    echo [+] Virtual environment created successfully
+    echo       Done.
     echo.
-    echo [*] Installing dependencies from requirements.txt...
-    .venv\Scripts\python.exe -m pip install --upgrade pip
+    echo [2/3] Upgrading pip...
+    .venv\Scripts\python.exe -m pip install --upgrade pip --quiet
+    echo       Done.
+    echo.
+    echo [3/3] Installing dependencies (this may take a few minutes)...
     .venv\Scripts\pip.exe install -r requirements.txt
     if errorlevel 1 (
-        echo [!] Failed to install dependencies
+        echo [!] ERROR: Failed to install dependencies.
         pause
         exit /b 1
     )
-    echo [+] Dependencies installed successfully
+    echo.
+    echo ============================================================
+    echo   Setup complete! Launching Text Analyzer Pro...
+    echo ============================================================
     echo.
 ) else (
-    echo [+] Virtual environment found. Checking for updates...
-    .venv\Scripts\pip.exe install -r requirements.txt --quiet
+    echo [*] Launching Text Analyzer Pro...
+    echo.
 )
 
-echo [*] Launching Text Analyzer Pro...
-echo.
 .venv\Scripts\python.exe gui.py
-pause
+if errorlevel 1 (
+    echo.
+    echo [!] Application exited with an error.
+    pause
+)

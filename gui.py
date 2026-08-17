@@ -18,15 +18,17 @@ from PySide6 import QtCore, QtGui, QtWidgets
 import app_settings
 from theme import ThemeManager
 
-from cluster_tool import (
-    TextCleaningConfig,
-    coerce_text_column,
+from textanalyzer.engine.cluster import (
     get_file_extension,
     get_sheet_names,
     load_table,
-    prepare_text_cleaning,
     save_results,
     visualize_embeddings,
+)
+from textanalyzer.engine.cleaning import (
+    TextCleaningConfig,
+    coerce_text_column,
+    prepare_text_cleaning,
 )
 
 from textanalyzer.controllers.analysis_controller import AnalysisController
@@ -135,6 +137,13 @@ class ClusterGUI(QtWidgets.QMainWindow):
         }
         self._embedding_first_run_announced = False
         self._embedding_worker = None
+
+        # Debounce timer for cleaning preview — prevents UI stutter when
+        # rapidly toggling checkboxes on large datasets.
+        self._cleaning_preview_timer = QtCore.QTimer(self)
+        self._cleaning_preview_timer.setSingleShot(True)
+        self._cleaning_preview_timer.setInterval(300)
+        self._cleaning_preview_timer.timeout.connect(self._do_refresh_cleaning_preview)
         # Categorization state — populated by _on_ctrl_categorization_finished;
         # last_run_was_categorization toggles the save path to emit the pivot
         # sheet and use Subcategory rather than cluster_name.
@@ -365,39 +374,43 @@ class ClusterGUI(QtWidgets.QMainWindow):
         sidebar.setObjectName("Sidebar")
         sidebar.setFixedWidth(228)
         layout = QtWidgets.QVBoxLayout(sidebar)
-        layout.setContentsMargins(14, 18, 14, 14)
-        layout.setSpacing(6)
+        layout.setContentsMargins(14, 16, 14, 14)
+        layout.setSpacing(4)
 
-        # Brand row
-        banner_pixmap = _load_banner_pixmap(48)
+        # Brand banner — same size as About dialog, scaled to fit sidebar
+        banner_pixmap = _load_banner_pixmap(140)
         if not banner_pixmap.isNull():
+            # Scale to fit within sidebar margins (228 - 28 padding = 200px max width)
+            max_w = 200
+            if banner_pixmap.width() > max_w:
+                banner_pixmap = banner_pixmap.scaledToWidth(
+                    max_w, QtCore.Qt.SmoothTransformation
+                )
             banner_label = QtWidgets.QLabel()
             banner_label.setPixmap(banner_pixmap)
             banner_label.setAlignment(QtCore.Qt.AlignCenter)
+            banner_label.setStyleSheet(
+                "background-color: #ffffff; border-radius: 8px; padding: 6px;"
+            )
             layout.addWidget(banner_label)
-            version_label = QtWidgets.QLabel(self.app_version)
-            version_label.setObjectName("SidebarTagline")
-            version_label.setAlignment(QtCore.Qt.AlignCenter)
-            layout.addWidget(version_label)
         else:
-            brand_row = QtWidgets.QHBoxLayout()
-            brand_row.setSpacing(10)
-            logo_label = QtWidgets.QLabel()
-            app_icon = _load_app_icon()
-            if not app_icon.isNull():
-                logo_label.setPixmap(app_icon.pixmap(28, 28))
-            brand_text = QtWidgets.QVBoxLayout()
-            brand_text.setSpacing(0)
-            brand_name = QtWidgets.QLabel("Text Analyzer")
+            brand_name = QtWidgets.QLabel("Text Analyzer Pro")
             brand_name.setObjectName("SidebarBrand")
-            brand_tag = QtWidgets.QLabel("Pro " + self.app_version)
-            brand_tag.setObjectName("SidebarTagline")
-            brand_text.addWidget(brand_name)
-            brand_text.addWidget(brand_tag)
-            brand_row.addWidget(logo_label)
-            brand_row.addLayout(brand_text, 1)
-            layout.addLayout(brand_row)
+            brand_name.setAlignment(QtCore.Qt.AlignCenter)
+            layout.addWidget(brand_name)
 
+        # Version pill
+        version_label = QtWidgets.QLabel(self.app_version)
+        version_label.setObjectName("SidebarVersion")
+        version_label.setAlignment(QtCore.Qt.AlignCenter)
+        version_label.setFixedWidth(48)
+        version_container = QtWidgets.QHBoxLayout()
+        version_container.addStretch()
+        version_container.addWidget(version_label)
+        version_container.addStretch()
+        layout.addLayout(version_container)
+
+        layout.addSpacing(6)
         divider = QtWidgets.QFrame()
         divider.setObjectName("SidebarDivider")
         layout.addWidget(divider)
@@ -605,6 +618,7 @@ class ClusterGUI(QtWidgets.QMainWindow):
         self.status_alg_label.setText(self.alg_combo.currentText() if hasattr(self, "alg_combo") else "kmeans")
 
     def _select_page(self, index: int):
+        prev_index = self.stack.currentIndex()
         self.stack.setCurrentIndex(index)
         for i, btn in enumerate(self.nav_buttons):
             btn.setChecked(i == index)
@@ -616,6 +630,20 @@ class ClusterGUI(QtWidgets.QMainWindow):
         title, subtitle = titles[index]
         self.page_title_label.setText(title)
         self.page_subtitle_label.setText(subtitle)
+
+        # Fast crossfade transition when switching pages
+        if prev_index != index:
+            target = self.stack.currentWidget()
+            if target is not None:
+                effect = QtWidgets.QGraphicsOpacityEffect(target)
+                target.setGraphicsEffect(effect)
+                anim = QtCore.QPropertyAnimation(effect, b"opacity", self)
+                anim.setDuration(150)
+                anim.setStartValue(0.0)
+                anim.setEndValue(1.0)
+                anim.setEasingCurve(QtCore.QEasingCurve.OutCubic)
+                anim.finished.connect(lambda: target.setGraphicsEffect(None))
+                anim.start(QtCore.QAbstractAnimation.DeleteWhenStopped)
 
     # ------------------------------------------------------------------ #
     # Setup page                                                         #
@@ -643,7 +671,7 @@ class ClusterGUI(QtWidgets.QMainWindow):
         file_group_layout.addWidget(self.data_source_panel)
         layout.addWidget(file_group)
 
-        params_group = QtWidgets.QGroupBox("Clustering Parameters")
+        params_group = QtWidgets.QGroupBox("Data & Vectorization")
         params_layout = QtWidgets.QGridLayout(params_group)
         params_layout.setHorizontalSpacing(12)
         params_layout.setVerticalSpacing(10)
@@ -738,30 +766,22 @@ class ClusterGUI(QtWidgets.QMainWindow):
         alg_field_layout.addWidget(self.compare_algos_btn)
 
         # Vectorizer row: TF-IDF (lexical) vs sentence-transformer embeddings
-        # (semantic). Stored engine value lives in itemData (currentData()).
+        # (semantic). Always selectable — offers install prompt if missing.
         from textanalyzer.engine.cluster import _ST_AVAILABLE as _ST_OK
         self.vec_combo = QtWidgets.QComboBox()
         self.vec_combo.addItem("TF-IDF (lexical)", userData="tfidf")
-        self.vec_combo.addItem("Embeddings (semantic)", userData="embedding")
-        if not _ST_OK:
-            # Disable the embedding row in-place so users see *why* it's unavailable.
-            model = self.vec_combo.model()
-            item = model.item(1) if hasattr(model, "item") else None
-            if item is not None:
-                item.setEnabled(False)
-            self.vec_combo.setItemData(
-                1,
-                "Requires `pip install sentence-transformers`. ~80MB model "
-                "downloaded on first run.",
-                QtCore.Qt.ItemDataRole.ToolTipRole,
-            )
+        if _ST_OK:
+            self.vec_combo.addItem("Embeddings (semantic)", userData="embedding")
         else:
-            self.vec_combo.setItemData(
-                1,
-                "Sentence embeddings (~80MB model downloaded on first run). "
-                "Better for semantic / paraphrase clustering.",
-                QtCore.Qt.ItemDataRole.ToolTipRole,
-            )
+            self.vec_combo.addItem("Embeddings (semantic) — not installed", userData="embedding")
+        self.vec_combo.setItemData(
+            1,
+            "Sentence embeddings (~80MB model downloaded on first run). "
+            "Better for semantic / paraphrase clustering."
+            if _ST_OK else
+            "Requires sentence-transformers. Select to install.",
+            QtCore.Qt.ItemDataRole.ToolTipRole,
+        )
         # Restore last-used vectorizer kind from settings.
         last_vec = self.settings.get("last_vectorizer_kind", "tfidf")
         if last_vec == "embedding" and _ST_OK:
@@ -794,24 +814,34 @@ class ClusterGUI(QtWidgets.QMainWindow):
         self.advanced_embed_btn.setEnabled(self.current_vectorizer_kind() == "embedding")
         self.advanced_tfidf_btn.setEnabled(self.current_vectorizer_kind() == "tfidf")
 
-        widgets = [
-            ("Text column:", self.col_combo),
-            ("Vectorizer:", vec_field),
-            ("Algorithm:", alg_field),
-            ("n_clusters:", k_field),
-            ("name top N:", self.name_top_spin),
-            ("joiner:", self.joiner_edit),
-            ("Visualization:", self.vis_combo),
-        ]
-        positions = [(0, 0), (0, 2), (1, 0), (1, 2), (2, 0), (2, 2), (3, 0)]
-        for (label, widget), (row, col) in zip(widgets, positions):
-            params_layout.addWidget(QtWidgets.QLabel(label), row, col)
-            params_layout.addWidget(widget, row, col + 1)
-        params_layout.addWidget(QtWidgets.QLabel("Output file:"), 4, 0)
-        params_layout.addWidget(self.out_edit, 4, 1, 1, 3)
+        # --- Vectorization card ---
+        params_layout.addWidget(QtWidgets.QLabel("Text column:"), 0, 0)
+        params_layout.addWidget(self.col_combo, 0, 1)
+        params_layout.addWidget(QtWidgets.QLabel("Vectorizer:"), 1, 0)
+        params_layout.addWidget(vec_field, 1, 1)
         params_layout.setColumnStretch(1, 1)
-        params_layout.setColumnStretch(3, 1)
         layout.addWidget(params_group)
+
+        # --- Algorithm & Clustering card ---
+        algo_group = QtWidgets.QGroupBox("Algorithm & Output")
+        algo_layout = QtWidgets.QGridLayout(algo_group)
+        algo_layout.setHorizontalSpacing(12)
+        algo_layout.setVerticalSpacing(10)
+        algo_layout.addWidget(QtWidgets.QLabel("Algorithm:"), 0, 0)
+        algo_layout.addWidget(alg_field, 0, 1)
+        algo_layout.addWidget(QtWidgets.QLabel("n_clusters:"), 0, 2)
+        algo_layout.addWidget(k_field, 0, 3)
+        algo_layout.addWidget(QtWidgets.QLabel("name top N:"), 1, 0)
+        algo_layout.addWidget(self.name_top_spin, 1, 1)
+        algo_layout.addWidget(QtWidgets.QLabel("joiner:"), 1, 2)
+        algo_layout.addWidget(self.joiner_edit, 1, 3)
+        algo_layout.addWidget(QtWidgets.QLabel("Visualization:"), 2, 0)
+        algo_layout.addWidget(self.vis_combo, 2, 1)
+        algo_layout.addWidget(QtWidgets.QLabel("Output file:"), 3, 0)
+        algo_layout.addWidget(self.out_edit, 3, 1, 1, 3)
+        algo_layout.setColumnStretch(1, 1)
+        algo_layout.setColumnStretch(3, 1)
+        layout.addWidget(algo_group)
         layout.addStretch(1)
 
     # ------------------------------------------------------------------ #
@@ -1114,17 +1144,17 @@ class ClusterGUI(QtWidgets.QMainWindow):
 
     def _on_vec_change(self, *_args):
         kind = self.current_vectorizer_kind()
-        # Surface the "Embeddings…" button only when meaningful, and gently
-        # nudge users the first time they pick embeddings so they're not
-        # surprised by the model download.
         self.advanced_embed_btn.setEnabled(kind == "embedding")
         self.advanced_tfidf_btn.setEnabled(kind == "tfidf")
-        if kind == "embedding" and not self._embedding_first_run_announced:
+        if kind == "embedding":
             try:
                 from textanalyzer.engine.cluster import _ST_AVAILABLE as _ST_OK
             except Exception:
                 _ST_OK = False
-            if _ST_OK:
+            if not _ST_OK:
+                self._offer_install_sentence_transformers()
+                return
+            if not self._embedding_first_run_announced:
                 show_toast(
                     self,
                     "Embeddings selected. First run will download ~80MB model.",
@@ -1137,6 +1167,71 @@ class ClusterGUI(QtWidgets.QMainWindow):
             app_settings.save(self.settings)
         except Exception:
             pass
+
+    def _offer_install_sentence_transformers(self):
+        """Prompt user to install sentence-transformers when they select embeddings."""
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            "Install sentence-transformers?",
+            "The Embeddings vectorizer requires the sentence-transformers package.\n\n"
+            "Would you like to install it now?\n"
+            "(This will run: pip install sentence-transformers)\n\n"
+            "The download is ~200MB and may take a few minutes.",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.Yes,
+        )
+        if reply == QtWidgets.QMessageBox.Yes:
+            self._run_pip_install_st()
+        else:
+            self.vec_combo.blockSignals(True)
+            self.vec_combo.setCurrentIndex(0)
+            self.vec_combo.blockSignals(False)
+            self.advanced_embed_btn.setEnabled(False)
+            self.advanced_tfidf_btn.setEnabled(True)
+
+    def _run_pip_install_st(self):
+        """Run pip install sentence-transformers in the background."""
+        import subprocess
+        import sys
+
+        self.log_msg("Installing sentence-transformers… (this may take a few minutes)")
+        show_toast(self, "Installing sentence-transformers…", level="info")
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+        QtWidgets.QApplication.processEvents()
+
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "pip", "install", "sentence-transformers"],
+                capture_output=True, text=True, timeout=600,
+            )
+            QtWidgets.QApplication.restoreOverrideCursor()
+            if result.returncode == 0:
+                self.log_msg("✓ sentence-transformers installed successfully. Restart the app to use embeddings.")
+                show_toast(self, "Installed! Restart the app to enable embeddings.", level="success")
+                # Update the combo text to remove "not installed" hint
+                self.vec_combo.setItemText(1, "Embeddings (semantic) — restart required")
+            else:
+                self.log_msg(f"✗ Installation failed: {result.stderr[:200]}")
+                show_error(
+                    self, "Installation failed",
+                    f"pip returned an error:\n\n{result.stderr[:500]}\n\n"
+                    "You can try manually: pip install sentence-transformers",
+                )
+                self.vec_combo.blockSignals(True)
+                self.vec_combo.setCurrentIndex(0)
+                self.vec_combo.blockSignals(False)
+        except subprocess.TimeoutExpired:
+            QtWidgets.QApplication.restoreOverrideCursor()
+            show_error(self, "Timeout", "Installation timed out after 10 minutes.")
+            self.vec_combo.blockSignals(True)
+            self.vec_combo.setCurrentIndex(0)
+            self.vec_combo.blockSignals(False)
+        except Exception as exc:
+            QtWidgets.QApplication.restoreOverrideCursor()
+            show_error(self, "Installation failed", str(exc))
+            self.vec_combo.blockSignals(True)
+            self.vec_combo.setCurrentIndex(0)
+            self.vec_combo.blockSignals(False)
 
     def _build_vectorize_kwargs(self) -> dict:
         """Render the active vectorizer's kwargs for ``vectorize_texts``.
@@ -1270,6 +1365,13 @@ class ClusterGUI(QtWidgets.QMainWindow):
         return f"{source_column}_cleaned"
 
     def refresh_cleaning_preview(self):
+        """Schedule a debounced cleaning preview refresh (300 ms)."""
+        if hasattr(self, "_cleaning_preview_timer"):
+            self._cleaning_preview_timer.start()
+        else:
+            self._do_refresh_cleaning_preview()
+
+    def _do_refresh_cleaning_preview(self):
         if not hasattr(self, "cleaning_preview_table"):
             return
         self.cleaning_preview_table.setRowCount(0)
@@ -1453,7 +1555,7 @@ class ClusterGUI(QtWidgets.QMainWindow):
             return
         try:
             ext = get_file_extension(self.current_file_path)
-            from cluster_tool import EXCEL_INPUT_EXTENSIONS
+            from textanalyzer.engine.cluster import EXCEL_INPUT_EXTENSIONS
             selected_sheet = sheet_name if ext in EXCEL_INPUT_EXTENSIONS else None
             self.df = load_table(self.current_file_path, sheet_name=selected_sheet)
             cols = list(self.df.columns)
@@ -1795,112 +1897,24 @@ class ClusterGUI(QtWidgets.QMainWindow):
             )
             return
 
-        dlg = QtWidgets.QDialog(self)
-        dlg.setWindowTitle("Run Categorization")
-        dlg.setModal(True)
-        layout = QtWidgets.QVBoxLayout(dlg)
-        layout.setSpacing(10)
+        from textanalyzer.ui.categorization_dialog import CategorizationDialog
 
-        form = QtWidgets.QFormLayout()
-        form.setHorizontalSpacing(10)
-        form.setVerticalSpacing(10)
-
-        last_granularity = int(self.settings.get("last_granularity", 50) or 50)
-        slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-        slider.setRange(0, 100)
-        slider.setValue(last_granularity)
-        slider.setToolTip("Coarse (left) → Fine (right). Drives HDBSCAN min_cluster_size.")
-        live_label = QtWidgets.QLabel()
-        live_label.setProperty("role", "muted")
-
-        vec_combo = QtWidgets.QComboBox()
-        vec_combo.addItem("Embeddings (semantic)", userData="embedding")
-        vec_combo.addItem("TF-IDF (lexical)", userData="tfidf")
-        # Honor the Setup tab's current vectorizer choice as the default.
         try:
             preferred = self.current_vectorizer_kind()
         except Exception:
             preferred = "embedding"
-        idx = 0 if preferred == "embedding" else 1
-        vec_combo.setCurrentIndex(idx)
 
-        form.addRow("Granularity:", slider)
-        form.addRow("", live_label)
-        form.addRow("Vectorizer:", vec_combo)
-
-        # Advanced expander
-        adv_toggle = QtWidgets.QToolButton()
-        adv_toggle.setText("Advanced (raw HDBSCAN knobs)")
-        adv_toggle.setCheckable(True)
-        adv_toggle.setArrowType(QtCore.Qt.RightArrow)
-        adv_toggle.setStyleSheet("QToolButton { border: none; }")
-        adv_widget = QtWidgets.QWidget()
-        adv_form = QtWidgets.QFormLayout(adv_widget)
-        adv_form.setContentsMargins(20, 0, 0, 0)
-        adv_form.setHorizontalSpacing(10)
-        adv_form.setVerticalSpacing(8)
-
-        from textanalyzer.models.config import CategorizationConfig
-        suggested_mcs = CategorizationConfig.min_cluster_size_from_granularity(last_granularity)
-        mcs_spin = QtWidgets.QSpinBox()
-        mcs_spin.setRange(2, 200)
-        mcs_spin.setValue(int(self.settings.get("last_min_cluster_size", suggested_mcs) or suggested_mcs))
-        adv_form.addRow("Min sub-cluster size:", mcs_spin)
-
-        nr_spin = QtWidgets.QSpinBox()
-        nr_spin.setRange(1, 500)
-        nr_spin.setValue(int(self.settings.get("last_non_repetitive_min_size", 5) or 5))
-        adv_form.addRow("Non-Repetitive cutoff:", nr_spin)
-
-        adv_widget.setVisible(False)
-
-        def _toggle_adv(checked: bool) -> None:
-            adv_widget.setVisible(checked)
-            adv_toggle.setArrowType(QtCore.Qt.DownArrow if checked else QtCore.Qt.RightArrow)
-
-        adv_toggle.toggled.connect(_toggle_adv)
-
-        def _update_label() -> None:
-            g = slider.value()
-            suggested = CategorizationConfig.min_cluster_size_from_granularity(g)
-            live_label.setText(f"min_cluster_size ≈ {suggested}  (slider value: {g})")
-            # Auto-sync the spinbox suggestion *only* if user hasn't manually changed it.
-            if not adv_widget.isVisible():
-                mcs_spin.blockSignals(True)
-                mcs_spin.setValue(suggested)
-                mcs_spin.blockSignals(False)
-
-        slider.valueChanged.connect(_update_label)
-        _update_label()
-
-        layout.addLayout(form)
-        layout.addWidget(adv_toggle)
-        layout.addWidget(adv_widget)
-
-        buttons = QtWidgets.QDialogButtonBox(
-            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
-        )
-        buttons.button(QtWidgets.QDialogButtonBox.Ok).setText("Run")
-        buttons.accepted.connect(dlg.accept)
-        buttons.rejected.connect(dlg.reject)
-        layout.addWidget(buttons)
-
+        dlg = CategorizationDialog(self.settings, preferred, parent=self)
         if dlg.exec() != QtWidgets.QDialog.Accepted:
             return
 
-        g = int(slider.value())
-        self.settings["last_granularity"] = g
-        self.settings["last_min_cluster_size"] = int(mcs_spin.value())
-        self.settings["last_non_repetitive_min_size"] = int(nr_spin.value())
+        self.settings["last_granularity"] = dlg.granularity()
+        self.settings["last_min_cluster_size"] = dlg.min_cluster_size()
+        self.settings["last_non_repetitive_min_size"] = dlg.non_repetitive_min_size()
         app_settings.save(self.settings)
 
-        categorize_kwargs = {
-            "vectorizer_kind": str(vec_combo.currentData() or "embedding"),
-            "min_cluster_size": int(mcs_spin.value()),
-            "non_repetitive_min_size": int(nr_spin.value()),
-        }
         self.controller.run_categorization(
-            column=col, config=config, categorize_kwargs=categorize_kwargs,
+            column=col, config=config, categorize_kwargs=dlg.get_categorize_kwargs(),
         )
 
     def _on_ctrl_categorization_finished(self, taxonomy_result) -> None:
@@ -2220,98 +2234,101 @@ class ClusterGUI(QtWidgets.QMainWindow):
     # Advanced clustering helpers (Suggest K, Advanced TF-IDF, Compare)  #
     # ------------------------------------------------------------------ #
 
-    def _prepare_setup_corpus(self):
-        """Clean + vectorize current text column for ad-hoc analysis.
+    def _prepare_setup_corpus(self, on_ready):
+        """Clean + vectorize current text column off the main thread.
 
-        Used by Suggest K and Compare Algorithms. Returns ``(vectorizer, X)``
-        or ``None`` on failure (warnings already shown to the user).
+        Calls ``on_ready(vectorizer, X)`` on success. Shows warnings on
+        failure. Used by Suggest K and Compare Algorithms.
         """
         if self.df is None:
             show_warning(self, "No data", "Open a file first.")
-            return None
+            return
         col = self.current_column_name()
         if not col or col not in self.df.columns:
             show_warning(self, "No column", "Pick a text column on the Setup tab first.")
-            return None
-        try:
-            cleaning_result = prepare_text_cleaning(
-                self.df[col].tolist(), self._build_cleaning_config()
-            )
-        except Exception as exc:
-            show_error(self, "Cleaning failed", f"Could not clean text: {exc}")
-            return None
-        if not cleaning_result.cluster_input_texts:
-            show_warning(
-                self,
-                "Nothing to analyze",
-                "Cleaning produced no usable rows. Adjust cleaning settings and retry.",
-            )
-            return None
-        try:
-            from cluster_tool import vectorize_texts as _vectorize
-            vectorizer, X = _vectorize(
-                cleaning_result.cluster_input_texts,
-                **self._build_vectorize_kwargs(),
-            )
-        except Exception as exc:
-            show_error(self, "Vectorization failed", str(exc))
-            return None
-        return vectorizer, X
+            return
+
+        from textanalyzer.workers.prepare_corpus import PrepareCorpusWorker
+
+        texts = self.df[col].tolist()
+        config = self._build_cleaning_config()
+        kwargs = self._build_vectorize_kwargs()
+
+        thread = QtCore.QThread(self)
+        worker = PrepareCorpusWorker(texts, config, kwargs)
+        worker.moveToThread(thread)
+
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+        self.log_msg("Preparing corpus (cleaning + vectorization)…")
+
+        def _on_finished(vectorizer, X):
+            QtWidgets.QApplication.restoreOverrideCursor()
+            thread.quit()
+            on_ready(vectorizer, X)
+
+        def _on_failed(msg):
+            QtWidgets.QApplication.restoreOverrideCursor()
+            thread.quit()
+            show_error(self, "Corpus preparation failed", msg)
+
+        worker.finished.connect(_on_finished)
+        worker.failed.connect(_on_failed)
+        thread.started.connect(worker.run)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(worker.deleteLater)
+        thread.start()
+
+        self._corpus_thread = thread
+        self._corpus_worker = worker
 
     def suggest_optimal_k(self, method: str = "silhouette"):
-        """Run k-search via silhouette or elbow and offer to apply the result.
-
-        method: 'silhouette' picks the k with the highest silhouette score
-                (best for clusters that are visibly separable).
-                'elbow' picks the k where inertia bends most sharply
-                (better when silhouette is uniformly low).
-        """
-        from cluster_tool import find_optimal_k as _find_k
-
+        """Run k-search via silhouette or elbow and offer to apply the result."""
         method = method if method in ("silhouette", "elbow") else "silhouette"
-        prepared = self._prepare_setup_corpus()
-        if prepared is None:
-            return
-        _, X = prepared
-        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
-        self.log_msg(f"Searching for optimal k via {method} method…")
-        try:
-            result = _find_k(X, k_range=(2, min(15, X.shape[0] - 1)), method=method)
-        except Exception as exc:
+
+        def _on_corpus_ready(_vectorizer, X):
+            from textanalyzer.engine.cluster import find_optimal_k as _find_k
+
+            QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+            self.log_msg(f"Searching for optimal k via {method} method…")
+            try:
+                result = _find_k(X, k_range=(2, min(15, X.shape[0] - 1)), method=method)
+            except Exception as exc:
+                QtWidgets.QApplication.restoreOverrideCursor()
+                show_error(self, "Suggest K failed", str(exc))
+                return
             QtWidgets.QApplication.restoreOverrideCursor()
-            show_error(self, "Suggest K failed", str(exc))
-            return
-        QtWidgets.QApplication.restoreOverrideCursor()
 
-        if method == "silhouette":
-            scores = result.get("scores", {})
-            detail_lines = [f"  k={k}: silhouette {s:.3f}" for k, s in sorted(scores.items())]
-            detail_label = "Scores"
-        else:
-            inertias = result.get("inertias", {})
-            detail_lines = [f"  k={k}: inertia {v:,.1f}" for k, v in sorted(inertias.items())]
-            detail_label = "Inertias"
-        detail_text = "\n".join(detail_lines) if detail_lines else "  (no values collected)"
+            if method == "silhouette":
+                scores = result.get("scores", {})
+                detail_lines = [f"  k={k}: silhouette {s:.3f}" for k, s in sorted(scores.items())]
+                detail_label = "Scores"
+            else:
+                inertias = result.get("inertias", {})
+                detail_lines = [f"  k={k}: inertia {v:,.1f}" for k, v in sorted(inertias.items())]
+                detail_label = "Inertias"
+            detail_text = "\n".join(detail_lines) if detail_lines else "  (no values collected)"
 
-        message = (
-            f"{result['recommendation']}\n\n"
-            f"Confidence: {result['confidence']}\n\n"
-            f"{detail_label}:\n{detail_text}\n\n"
-            f"Apply k = {result['optimal_k']} to the n_clusters field?"
-        )
-        title = "Suggested cluster count" if method == "silhouette" else "Elbow-method cluster count"
-        button = QtWidgets.QMessageBox.question(
-            self,
-            title,
-            message,
-            QtWidgets.QMessageBox.Apply | QtWidgets.QMessageBox.Cancel,
-            QtWidgets.QMessageBox.Apply,
-        )
-        if button == QtWidgets.QMessageBox.Apply:
-            self.k_spin.setValue(int(result["optimal_k"]))
-            self.log_msg(f"✓ Applied {method} k = {result['optimal_k']}")
-        else:
-            self.log_msg(f"{method.capitalize()} k = {result['optimal_k']} (not applied)")
+            message = (
+                f"{result['recommendation']}\n\n"
+                f"Confidence: {result['confidence']}\n\n"
+                f"{detail_label}:\n{detail_text}\n\n"
+                f"Apply k = {result['optimal_k']} to the n_clusters field?"
+            )
+            title = "Suggested cluster count" if method == "silhouette" else "Elbow-method cluster count"
+            button = QtWidgets.QMessageBox.question(
+                self,
+                title,
+                message,
+                QtWidgets.QMessageBox.Apply | QtWidgets.QMessageBox.Cancel,
+                QtWidgets.QMessageBox.Apply,
+            )
+            if button == QtWidgets.QMessageBox.Apply:
+                self.k_spin.setValue(int(result["optimal_k"]))
+                self.log_msg(f"✓ Applied {method} k = {result['optimal_k']}")
+            else:
+                self.log_msg(f"{method.capitalize()} k = {result['optimal_k']} (not applied)")
+
+        self._prepare_setup_corpus(_on_corpus_ready)
 
     def open_advanced_tfidf(self):
         """Modal exposing min_df / max_df / ngram_range / hashing / max_features."""
@@ -2384,12 +2401,7 @@ class ClusterGUI(QtWidgets.QMainWindow):
         except Exception:
             _ST_OK = False
         if not _ST_OK:
-            show_error(
-                self,
-                "sentence-transformers not installed",
-                "Embedding mode requires the sentence-transformers package.\n\n"
-                "Install with:\n\n    pip install sentence-transformers",
-            )
+            self._offer_install_sentence_transformers()
             return
 
         dlg = QtWidgets.QDialog(self)
@@ -2462,12 +2474,14 @@ class ClusterGUI(QtWidgets.QMainWindow):
 
     def compare_algorithms_dialog(self):
         """Run KMeans / DBSCAN / Agglomerative on the same matrix and show metrics."""
-        from cluster_tool import compare_algorithms as _compare, get_best_algorithm as _best
 
-        prepared = self._prepare_setup_corpus()
-        if prepared is None:
-            return
-        _, X = prepared
+        def _on_corpus_ready(_vectorizer, X):
+            self._run_compare_algorithms(X)
+
+        self._prepare_setup_corpus(_on_corpus_ready)
+
+    def _run_compare_algorithms(self, X):
+        from textanalyzer.engine.cluster import compare_algorithms as _compare, get_best_algorithm as _best
 
         progress = QtWidgets.QProgressDialog(
             "Running algorithms…", "Cancel", 0, 100, self
