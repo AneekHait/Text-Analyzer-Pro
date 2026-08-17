@@ -52,8 +52,16 @@ Use it for customer-feedback clustering, survey-response analysis, support-ticke
 
 ### Vectorization
 - **TF-IDF (default)** — sparse lexical features; fast, explainable, zero extra install
-- **Sentence embeddings (optional)** — dense semantic features via [sentence-transformers](https://www.sbert.net/); clusters synonyms and paraphrases that TF-IDF splits apart. Default model is `all-MiniLM-L6-v2` (384-dim, ~80MB, CPU-friendly). Cluster names still come from a side TF-IDF fit on the same texts.
+- **Sentence Embeddings (semantic)** — dense semantic features powered by [sentence-transformers](https://www.sbert.net/). This is the **recommended mode for production-quality clustering** — it understands meaning, not just keywords. Synonyms, paraphrases, and semantically related texts land in the same cluster even when they share no common words.
+  - Default model: **`all-MiniLM-L6-v2`** (384 dimensions, ~80 MB download on first run, CPU-friendly)
+  - Changeable via **Embeddings…** dialog to any Hugging Face sentence-transformer model (e.g. `all-mpnet-base-v2` for higher accuracy, or multilingual models for non-English data)
+  - Runs on CPU by default; automatically uses CUDA GPU when available for 5-10x speedup
+  - Configurable batch size for memory-constrained machines
+  - Cluster names still derived from a side TF-IDF fit — human-readable labels without an LLM
+  - **Install**: included in `requirements.txt`. If missing, the app prompts to install it directly from the GUI
 - Switch modes in the **Setup tab** vectorizer combo. **Advanced TF-IDF** and **Advanced embeddings…** dialogs expose model / device / batch size.
+
+> **Why sentence-transformers?** TF-IDF clusters by word overlap — "car broke down" and "vehicle malfunction" end up in different clusters. Sentence embeddings capture semantic similarity, so both land together. For support tickets, survey responses, and customer feedback, embeddings produce dramatically better clusters with less manual tuning.
 
 ### Categorization (single-level taxonomy)
 - **Run Categorization** discovers a per-dataset taxonomy: each ticket gets `Repetitive/Non-Repetitive`, `Subcategory`, and `Confidence` columns
@@ -106,7 +114,11 @@ Use it for customer-feedback clustering, survey-response analysis, support-ticke
 
 ## Quickstart
 
-### Windows (recommended)
+### Windows — Standalone EXE (no install needed)
+
+Download **`dist/TextAnalyzerPro/TextAnalyzerPro.exe`** from this repository and double-click to launch. No Python installation required.
+
+### Windows — From source (recommended for development)
 
 1. Double-click `run.bat` in the project root.
 2. On first run it creates `.venv`, installs `requirements.txt`, and launches the GUI.
@@ -128,7 +140,14 @@ pip install -r requirements.txt
 python gui.py
 ```
 
-> **Optional**: `pip install hdbscan` enables the HDBSCAN algorithm. `pip install cuml` (Linux + NVIDIA GPU) enables GPU-accelerated KMeans. `pip install sentence-transformers` enables the **Embeddings** vectorizer mode (~80MB model downloaded on first run).
+### Build the EXE yourself
+
+```bash
+python build_exe.py
+# Output: dist/TextAnalyzerPro/TextAnalyzerPro.exe
+```
+
+> **Optional**: `pip install hdbscan` enables the HDBSCAN algorithm. `pip install cuml` (Linux + NVIDIA GPU) enables GPU-accelerated KMeans.
 
 ---
 

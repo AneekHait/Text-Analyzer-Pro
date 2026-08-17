@@ -7,8 +7,6 @@ __pycache__/
 *.so
 
 # Distribution / packaging
-build/
-dist/
 *.egg
 *.egg-info/
 *.whl
@@ -114,8 +112,11 @@ logs/
 # PyInstaller
 # ==========================================================================
 *.spec
-dist/
 build/
+dist/*
+!dist/TextAnalyzerPro/
+dist/TextAnalyzerPro/*
+!dist/TextAnalyzerPro/TextAnalyzerPro.exe
 
 # ==========================================================================
 # Project-specific local files
